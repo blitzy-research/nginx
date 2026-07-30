@@ -107,6 +107,7 @@ HTTP_UPSTREAM_LEAST_CONN=YES
 HTTP_UPSTREAM_RANDOM=YES
 HTTP_UPSTREAM_KEEPALIVE=YES
 HTTP_UPSTREAM_ZONE=YES
+HTTP_STATUS_VALIDATION=NO
 
 # STUB
 HTTP_STUB_STATUS=NO
@@ -259,6 +260,7 @@ $0: warning: the \"--with-ipv6\" option is deprecated"
         --with-http_secure_link_module)  HTTP_SECURE_LINK=YES       ;;
         --with-http_degradation_module)  HTTP_DEGRADATION=YES       ;;
         --with-http_slice_module)        HTTP_SLICE=YES             ;;
+        --with-http_status_validation)   HTTP_STATUS_VALIDATION=YES ;;
 
         --without-http_charset_module)   HTTP_CHARSET=NO            ;;
         --without-http_gzip_module)      HTTP_GZIP=NO               ;;
@@ -480,6 +482,7 @@ cat << END
   --with-http_degradation_module     enable ngx_http_degradation_module
   --with-http_slice_module           enable ngx_http_slice_module
   --with-http_stub_status_module     enable ngx_http_stub_status_module
+  --with-http_status_validation      enable HTTP status code validation
 
   --without-http_charset_module      disable ngx_http_charset_module
   --without-http_gzip_module         disable ngx_http_gzip_module

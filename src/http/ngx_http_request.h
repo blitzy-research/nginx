@@ -557,6 +557,7 @@ struct ngx_http_request_s {
     unsigned                          logged:1;
     unsigned                          terminated:1;
 
+    unsigned                          status_final:1;
     unsigned                          buffered:4;
 
     unsigned                          main_filter_need_in_memory:1;
