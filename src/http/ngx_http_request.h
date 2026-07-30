@@ -557,6 +557,7 @@ struct ngx_http_request_s {
     unsigned                          logged:1;
     unsigned                          terminated:1;
 
+    unsigned                          status_final:1;
     unsigned                          buffered:4;
 
     unsigned                          main_filter_need_in_memory:1;
@@ -573,13 +574,6 @@ struct ngx_http_request_s {
 
     unsigned                          background:1;
     unsigned                          health_check:1;
-
-    /*
-     * whether a response status has already been finalized for the request;
-     * the bit is kept at the end of the bit field run so that it occupies a
-     * padding bit and the positions of the preceding bits are preserved
-     */
-    unsigned                          status_final:1;
 
     /* used to parse HTTP headers */
 

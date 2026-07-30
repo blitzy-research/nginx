@@ -1859,13 +1859,13 @@ ngx_http_send_header(ngx_http_request_t *r)
     }
 
     /*
-     * The status is promoted here rather than chosen, so this is the last
-     * gate before the filter chain and the promotion has to complete even
-     * when a strict build reports the status: the response has already been
-     * decided and there is nothing left to redirect it to, which is why the
-     * result is discarded.  The status line is cleared here and not by the
-     * setter, which does not touch it, so that the promoted status is not
-     * sent under the status line of the one it replaced.
+     * The status is promoted here rather than chosen, so a strict build
+     * neither reports it again nor refuses it: it was reported where it was
+     * chosen, and the response has already been decided and has nothing left
+     * to redirect it to, which is why the result is discarded.  This is the
+     * last gate before the filter chain.  The status line is cleared here and
+     * not by the setter, which does not touch it, so that the promoted status
+     * is not sent under the status line of the one it replaced.
      */
 
     if (r->err_status) {

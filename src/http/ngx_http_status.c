@@ -297,6 +297,12 @@ ngx_http_status_lookup(ngx_uint_t status)
  * The store happens even when the status was rejected, so that the requested
  * status is never quietly replaced by the previous one; a rejection is
  * reported through the return value and the log alone.
+ *
+ * A status is reported once for the request, where it was chosen.  The error
+ * status a request carries is chosen either by the handler that returned it,
+ * which the single gate in ngx_http_special_response_handler() reports, or by
+ * an error_page directive; where it is later promoted over the response status
+ * it is not being chosen again, so promoting it does not report it again.
  */
 
 ngx_int_t
@@ -317,8 +323,14 @@ ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
      */
 
     if (r->upstream == NULL && !ngx_http_status_present(status)) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                      "unregistered HTTP status %ui", status);
+
+        /* a promoted error status was already reported where it was chosen */
+
+        if (status != r->err_status) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "unregistered HTTP status %ui", status);
+        }
+
         rc = NGX_ERROR;
     }
 
