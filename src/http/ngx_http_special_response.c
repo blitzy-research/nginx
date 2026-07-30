@@ -11,6 +11,7 @@
 #include <nginx.h>
 
 
+static ngx_uint_t ngx_http_error_page_index(ngx_uint_t status);
 static ngx_int_t ngx_http_send_error_page(ngx_http_request_t *r,
     ngx_http_err_page_t *err_page);
 static ngx_int_t ngx_http_send_special_response(ngx_http_request_t *r,
@@ -341,9 +342,6 @@ static ngx_str_t ngx_http_error_pages[] = {
 
     ngx_null_string,                     /* 201, 204 */
 
-#define NGX_HTTP_LAST_2XX  202
-#define NGX_HTTP_OFF_3XX   (NGX_HTTP_LAST_2XX - 201)
-
     /* ngx_null_string, */               /* 300 */
     ngx_string(ngx_http_error_301_page),
     ngx_string(ngx_http_error_302_page),
@@ -353,9 +351,6 @@ static ngx_str_t ngx_http_error_pages[] = {
     ngx_null_string,                     /* 306 */
     ngx_string(ngx_http_error_307_page),
     ngx_string(ngx_http_error_308_page),
-
-#define NGX_HTTP_LAST_3XX  309
-#define NGX_HTTP_OFF_4XX   (NGX_HTTP_LAST_3XX - 301 + NGX_HTTP_OFF_3XX)
 
     ngx_string(ngx_http_error_400_page),
     ngx_string(ngx_http_error_401_page),
@@ -388,9 +383,6 @@ static ngx_str_t ngx_http_error_pages[] = {
     ngx_null_string,                     /* 428 */
     ngx_string(ngx_http_error_429_page),
 
-#define NGX_HTTP_LAST_4XX  430
-#define NGX_HTTP_OFF_5XX   (NGX_HTTP_LAST_4XX - 400 + NGX_HTTP_OFF_4XX)
-
     ngx_string(ngx_http_error_494_page), /* 494, request header too large */
     ngx_string(ngx_http_error_495_page), /* 495, https certificate error */
     ngx_string(ngx_http_error_496_page), /* 496, https no certificate */
@@ -407,10 +399,90 @@ static ngx_str_t ngx_http_error_pages[] = {
     ngx_null_string,                     /* 506 */
     ngx_string(ngx_http_error_507_page)
 
-#define NGX_HTTP_LAST_5XX  508
-
 };
 
+
+/*
+ * The rows above are the zero length row followed by three spans of
+ * consecutive status codes, and this table is the index into them, in the same
+ * shape as the index that the status registry keeps over its own definitions:
+ * a code is resolved by finding the span that holds it and adding its offset
+ * within that span.  A span records only the codes it covers, because its
+ * first row follows from the spans before it; the rows are therefore
+ * contiguous by construction rather than by hand written arithmetic.
+ *
+ * This replaces the per class "last code" and "row offset" macros that used to
+ * be defined between the rows of the array itself, four of which shared their
+ * names with a set in the header filter that held different values.
+ *
+ * The spans must be in ascending order and must cover the array exactly:
+ * 1 + (309 - 301) + (430 - 400) + (508 - 494) is the row count, 53.
+ */
+
+typedef struct {
+    ngx_uint_t   first;                  /* first status code of the span */
+    ngx_uint_t   last;                   /* one past the last status code */
+} ngx_http_error_page_span_t;
+
+
+static ngx_http_error_page_span_t  ngx_http_error_page_spans[] = {
+    { NGX_HTTP_MOVED_PERMANENTLY, 309 },
+    { NGX_HTTP_BAD_REQUEST, 430 },
+    { NGX_HTTP_NGINX_CODES, 508 },
+    { 0, 0 }
+};
+
+
+/*
+ * The row of ngx_http_error_pages[] that a status code selects.  A code that
+ * no span covers, whether it falls between the spans as 444 does or lies
+ * outside them altogether, selects row 0 and so a zero length body.
+ *
+ * Membership is deliberately not tested against the status registry: row 43
+ * answers code 498 with the 404 page although 498 is not a registered code,
+ * and every other unregistered code that a span covers already selects a row
+ * that holds no page at all.
+ */
+
+static ngx_uint_t
+ngx_http_error_page_index(ngx_uint_t status)
+{
+    ngx_uint_t                   row;
+    ngx_http_error_page_span_t  *span;
+
+    row = 1;
+
+    for (span = ngx_http_error_page_spans; span->first; span++) {
+
+        if (status < span->first) {
+            break;
+        }
+
+        if (status < span->last) {
+            return row + (status - span->first);
+        }
+
+        row += span->last - span->first;
+    }
+
+    /* unknown code, zero body */
+
+    return 0;
+}
+
+
+/*
+ * This is also the one point at which a status that nginx itself chose by
+ * returning it is validated, because every such status arrives here through
+ * ngx_http_finalize_request(); the return statements that produce them need no
+ * change of their own.
+ *
+ * The exemption is scoped to the origin of the status rather than to the call
+ * site: a status that an upstream chose is relayed faithfully, and it reaches
+ * this function whenever an upstream error is intercepted and re-enters
+ * nginx's own error page machinery.  The codes that are internal to nginx are
+ * registered, so they are accepted in silence.
+ */
 
 ngx_int_t
 ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
@@ -422,6 +494,19 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
     ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http special response: %i, \"%V?%V\"",
                    error, &r->uri, &r->args);
+
+#if (NGX_HTTP_STATUS_VALIDATION)
+
+    /* reported and never replaced: the response carries what was asked for */
+
+    if (r->upstream == NULL
+        && ngx_http_status_validate((ngx_uint_t) error) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "unregistered HTTP status %i", error);
+    }
+
+#endif
 
     r->err_status = error;
 
@@ -490,34 +575,20 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
         /* 204 */
         err = 0;
 
-    } else if (error >= NGX_HTTP_MOVED_PERMANENTLY
-               && error < NGX_HTTP_LAST_3XX)
-    {
-        /* 3XX */
-        err = error - NGX_HTTP_MOVED_PERMANENTLY + NGX_HTTP_OFF_3XX;
-
-    } else if (error >= NGX_HTTP_BAD_REQUEST
-               && error < NGX_HTTP_LAST_4XX)
-    {
-        /* 4XX */
-        err = error - NGX_HTTP_BAD_REQUEST + NGX_HTTP_OFF_4XX;
-
-    } else if (error >= NGX_HTTP_NGINX_CODES
-               && error < NGX_HTTP_LAST_5XX)
-    {
-        /* 49X, 5XX */
-        err = error - NGX_HTTP_NGINX_CODES + NGX_HTTP_OFF_5XX;
-        switch (error) {
-            case NGX_HTTP_TO_HTTPS:
-            case NGX_HTTPS_CERT_ERROR:
-            case NGX_HTTPS_NO_CERT:
-            case NGX_HTTP_REQUEST_HEADER_TOO_LARGE:
-                r->err_status = NGX_HTTP_BAD_REQUEST;
-        }
-
     } else {
-        /* unknown code, zero body */
-        err = 0;
+        /* 3XX, 4XX, 49X, 5XX, and zero body for an unknown code */
+        err = ngx_http_error_page_index((ngx_uint_t) error);
+
+        if (error >= NGX_HTTP_NGINX_CODES) {
+            /* 49X */
+            switch (error) {
+                case NGX_HTTP_TO_HTTPS:
+                case NGX_HTTPS_CERT_ERROR:
+                case NGX_HTTPS_NO_CERT:
+                case NGX_HTTP_REQUEST_HEADER_TOO_LARGE:
+                    r->err_status = NGX_HTTP_BAD_REQUEST;
+            }
+        }
     }
 
     return ngx_http_send_special_response(r, clcf, err);
@@ -589,6 +660,7 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
 {
     ngx_int_t                  overwrite;
     ngx_str_t                  uri, args;
+    ngx_uint_t                 err;
     ngx_table_elt_t           *location;
     ngx_http_core_loc_conf_t  *clcf;
 
@@ -663,9 +735,11 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
         return ngx_http_send_refresh(r);
     }
 
-    return ngx_http_send_special_response(r, clcf, r->err_status
-                                                   - NGX_HTTP_MOVED_PERMANENTLY
-                                                   + NGX_HTTP_OFF_3XX);
+    /* the status here is one of the redirects, so it selects a 3XX row */
+
+    err = ngx_http_error_page_index(r->err_status);
+
+    return ngx_http_send_special_response(r, clcf, err);
 }
 
 
@@ -697,10 +771,17 @@ ngx_http_send_special_response(ngx_http_request_t *r,
 
     if (ngx_http_error_pages[err].len) {
         r->headers_out.content_length_n = ngx_http_error_pages[err].len + len;
+
+        /*
+         * The last test admits the rows that hold a 4XX or 5XX page, which are
+         * the rows at or after the one that 400 selects, and so excludes both
+         * the zero length row and the 3XX redirect rows.
+         */
+
         if (clcf->msie_padding
             && (r->headers_in.msie || r->headers_in.chrome)
             && r->http_version >= NGX_HTTP_VERSION_10
-            && err >= NGX_HTTP_OFF_4XX)
+            && err >= ngx_http_error_page_index(NGX_HTTP_BAD_REQUEST))
         {
             r->headers_out.content_length_n +=
                                          sizeof(ngx_http_msie_padding) - 1;
