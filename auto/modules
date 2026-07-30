@@ -71,6 +71,7 @@ if [ $HTTP = YES ]; then
         ngx_module_incs="src/http src/http/modules"
         ngx_module_deps="src/http/ngx_http.h \
                          src/http/ngx_http_request.h \
+                         src/http/ngx_http_status.h \
                          src/http/ngx_http_config.h \
                          src/http/ngx_http_core_module.h \
                          src/http/ngx_http_cache.h \
@@ -83,6 +84,7 @@ if [ $HTTP = YES ]; then
                          src/http/ngx_http_special_response.c \
                          src/http/ngx_http_request.c \
                          src/http/ngx_http_parse.c \
+                         src/http/ngx_http_status.c \
                          src/http/modules/ngx_http_log_module.c \
                          src/http/ngx_http_request_body.c \
                          src/http/ngx_http_variables.c \
@@ -99,6 +101,11 @@ if [ $HTTP = YES ]; then
     if [ $HTTP_CACHE = YES ]; then
         have=NGX_HTTP_CACHE . auto/have
         HTTP_SRCS="$HTTP_SRCS $HTTP_FILE_CACHE_SRCS"
+    fi
+
+
+    if [ $HTTP_STATUS_VALIDATION = YES ]; then
+        have=NGX_HTTP_STATUS_VALIDATION . auto/have
     fi
 
 
