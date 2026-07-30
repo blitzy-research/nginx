@@ -1778,7 +1778,18 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
         return rc;
     }
 
-    r->headers_out.status = status;
+    /*
+     * nginx chooses this status itself, so it is set through the status
+     * registry rather than assigned directly.  The status arrives as a
+     * parameter and is therefore not known when this is compiled, so it is
+     * looked up rather than folded away; a build without status validation
+     * has nothing to look up and the call is just the assignment.
+     */
+
+    if (ngx_http_status_set(r, status) != NGX_OK) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0, "invalid status");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
 
     if (ngx_http_complex_value(r, cv, &val) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -1855,8 +1866,24 @@ ngx_http_send_header(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
+    /*
+     * This is the last point at which the status of a response changes
+     * before the header filters run, and the change is a promotion of a
+     * status that has already been decided rather than a new choice.  It
+     * still goes through the registry, which accepts nginx's own codes such
+     * as 444 and 499 like any other, because they are registered.
+     *
+     * The status line is cleared here and not by the setter, which writes
+     * the status alone: were the setter to refuse the status it would leave
+     * the previous one in place, and clearing the status line anyway would
+     * quietly send that previous status instead of failing.
+     */
+
     if (r->err_status) {
-        r->headers_out.status = r->err_status;
+        if (ngx_http_status_set(r, r->err_status) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
         r->headers_out.status_line.len = 0;
     }
 
@@ -3417,6 +3444,22 @@ ngx_http_core_type(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
 static ngx_int_t
 ngx_http_core_preconfiguration(ngx_conf_t *cf)
 {
+    /*
+     * The status registry is prepared here because preconfiguration runs
+     * before the first "http" directive is parsed, so that a module may
+     * register a status code of its own while the configuration is read.
+     *
+     * Preconfiguration runs again for every configuration that is parsed,
+     * that is on every reload and on every configuration test, and
+     * initialization is idempotent for that reason: it releases the seal and
+     * rebuilds the registry, so that each configuration starts from the
+     * built-in status codes alone and none is ever carried over.
+     */
+
+    if (ngx_http_status_init(cf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     return ngx_http_variables_add_core_vars(cf);
 }
 
@@ -3425,6 +3468,15 @@ static ngx_int_t
 ngx_http_core_postconfiguration(ngx_conf_t *cf)
 {
     ngx_http_top_request_body_filter = ngx_http_request_body_save_filter;
+
+    /*
+     * Every module has had the opportunity to register a status code by
+     * now, and the worker processes have not been forked yet, so the
+     * registry is sealed here.  From this point it is only read, which is
+     * what keeps it shared between the workers and out of the request path.
+     */
+
+    ngx_http_status_seal();
 
     return NGX_OK;
 }
