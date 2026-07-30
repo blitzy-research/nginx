@@ -2835,7 +2835,7 @@ ngx_http_terminate_request(ngx_http_request_t *r, ngx_int_t rc)
     mr->terminated = 1;
 
     if (rc > 0 && (mr->headers_out.status == 0 || mr->connection->sent == 0)) {
-        mr->headers_out.status = rc;
+        (void) ngx_http_status_set(mr, rc);
     }
 
     cln = mr->cleanup;
@@ -3912,7 +3912,7 @@ ngx_http_free_request(ngx_http_request_t *r, ngx_int_t rc)
 #endif
 
     if (rc > 0 && (r->headers_out.status == 0 || r->connection->sent == 0)) {
-        r->headers_out.status = rc;
+        (void) ngx_http_status_set(r, rc);
     }
 
     if (!r->logged) {

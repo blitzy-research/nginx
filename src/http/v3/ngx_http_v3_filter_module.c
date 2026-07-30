@@ -119,6 +119,12 @@ ngx_http_v3_header_filter(ngx_http_request_t *r)
         r->header_only = 1;
     }
 
+    /*
+     * The status tests below are left as comparisons rather than registry
+     * flag tests: no flag has the exact membership {200, 206, 304}, and a
+     * test for a single code is not expressible as a flag test at all.
+     */
+
     if (r->headers_out.last_modified_time != -1) {
         if (r->headers_out.status != NGX_HTTP_OK
             && r->headers_out.status != NGX_HTTP_PARTIAL_CONTENT

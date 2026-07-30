@@ -214,25 +214,7 @@ ngx_http_headers_filter(ngx_http_request_t *r)
         return ngx_http_next_header_filter(r);
     }
 
-    switch (r->headers_out.status) {
-
-    case NGX_HTTP_OK:
-    case NGX_HTTP_CREATED:
-    case NGX_HTTP_NO_CONTENT:
-    case NGX_HTTP_PARTIAL_CONTENT:
-    case NGX_HTTP_MOVED_PERMANENTLY:
-    case NGX_HTTP_MOVED_TEMPORARILY:
-    case NGX_HTTP_SEE_OTHER:
-    case NGX_HTTP_NOT_MODIFIED:
-    case NGX_HTTP_TEMPORARY_REDIRECT:
-    case NGX_HTTP_PERMANENT_REDIRECT:
-        safe_status = 1;
-        break;
-
-    default:
-        safe_status = 0;
-        break;
-    }
+    safe_status = ngx_http_status_expires_ok(r->headers_out.status);
 
     if (conf->expires != NGX_HTTP_EXPIRES_OFF && safe_status) {
         if (ngx_http_set_expires(r, conf) != NGX_OK) {
@@ -305,25 +287,7 @@ ngx_http_trailers_filter(ngx_http_request_t *r, ngx_chain_t *in)
         return ngx_http_next_body_filter(r, in);
     }
 
-    switch (r->headers_out.status) {
-
-    case NGX_HTTP_OK:
-    case NGX_HTTP_CREATED:
-    case NGX_HTTP_NO_CONTENT:
-    case NGX_HTTP_PARTIAL_CONTENT:
-    case NGX_HTTP_MOVED_PERMANENTLY:
-    case NGX_HTTP_MOVED_TEMPORARILY:
-    case NGX_HTTP_SEE_OTHER:
-    case NGX_HTTP_NOT_MODIFIED:
-    case NGX_HTTP_TEMPORARY_REDIRECT:
-    case NGX_HTTP_PERMANENT_REDIRECT:
-        safe_status = 1;
-        break;
-
-    default:
-        safe_status = 0;
-        break;
-    }
+    safe_status = ngx_http_status_expires_ok(r->headers_out.status);
 
     h = conf->trailers->elts;
     for (i = 0; i < conf->trailers->nelts; i++) {

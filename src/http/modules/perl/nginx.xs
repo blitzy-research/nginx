@@ -105,6 +105,7 @@ void
 status(r, code)
     CODE:
 
+    IV                    code;
     ngx_http_request_t   *r;
     ngx_http_perl_ctx_t  *ctx;
 
@@ -114,7 +115,16 @@ status(r, code)
         croak("status(): cannot be used in variable handler");
     }
 
-    r->headers_out.status = SvIV(ST(1));
+    code = SvIV(ST(1));
+
+    if (!ngx_http_status_in_range(code)) {
+        croak("status(): invalid status code");
+    }
+
+    if (ngx_http_status_set(r, (ngx_uint_t) code) != NGX_OK) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0, "invalid status");
+        croak("status(): invalid status code");
+    }
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "perl status: %d", r->headers_out.status);

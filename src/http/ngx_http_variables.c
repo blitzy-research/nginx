@@ -1899,18 +1899,7 @@ ngx_http_variable_status(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    if (r->err_status) {
-        status = r->err_status;
-
-    } else if (r->headers_out.status) {
-        status = r->headers_out.status;
-
-    } else if (r->http_version == NGX_HTTP_VERSION_9) {
-        status = 9;
-
-    } else {
-        status = 0;
-    }
+    status = ngx_http_status_effective(r);
 
     v->len = ngx_sprintf(v->data, "%03ui", status) - v->data;
     v->valid = 1;

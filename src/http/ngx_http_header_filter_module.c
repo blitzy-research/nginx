@@ -55,87 +55,6 @@ static ngx_str_t ngx_http_early_hints_status_line =
     ngx_string("HTTP/1.1 103 Early Hints" CRLF);
 
 
-static ngx_str_t ngx_http_status_lines[] = {
-
-    ngx_string("200 OK"),
-    ngx_string("201 Created"),
-    ngx_string("202 Accepted"),
-    ngx_null_string,  /* "203 Non-Authoritative Information" */
-    ngx_string("204 No Content"),
-    ngx_null_string,  /* "205 Reset Content" */
-    ngx_string("206 Partial Content"),
-
-    /* ngx_null_string, */  /* "207 Multi-Status" */
-
-#define NGX_HTTP_LAST_2XX  207
-#define NGX_HTTP_OFF_3XX   (NGX_HTTP_LAST_2XX - 200)
-
-    /* ngx_null_string, */  /* "300 Multiple Choices" */
-
-    ngx_string("301 Moved Permanently"),
-    ngx_string("302 Moved Temporarily"),
-    ngx_string("303 See Other"),
-    ngx_string("304 Not Modified"),
-    ngx_null_string,  /* "305 Use Proxy" */
-    ngx_null_string,  /* "306 unused" */
-    ngx_string("307 Temporary Redirect"),
-    ngx_string("308 Permanent Redirect"),
-
-#define NGX_HTTP_LAST_3XX  309
-#define NGX_HTTP_OFF_4XX   (NGX_HTTP_LAST_3XX - 301 + NGX_HTTP_OFF_3XX)
-
-    ngx_string("400 Bad Request"),
-    ngx_string("401 Unauthorized"),
-    ngx_string("402 Payment Required"),
-    ngx_string("403 Forbidden"),
-    ngx_string("404 Not Found"),
-    ngx_string("405 Not Allowed"),
-    ngx_string("406 Not Acceptable"),
-    ngx_null_string,  /* "407 Proxy Authentication Required" */
-    ngx_string("408 Request Time-out"),
-    ngx_string("409 Conflict"),
-    ngx_string("410 Gone"),
-    ngx_string("411 Length Required"),
-    ngx_string("412 Precondition Failed"),
-    ngx_string("413 Request Entity Too Large"),
-    ngx_string("414 Request-URI Too Large"),
-    ngx_string("415 Unsupported Media Type"),
-    ngx_string("416 Requested Range Not Satisfiable"),
-    ngx_null_string,  /* "417 Expectation Failed" */
-    ngx_null_string,  /* "418 unused" */
-    ngx_null_string,  /* "419 unused" */
-    ngx_null_string,  /* "420 unused" */
-    ngx_string("421 Misdirected Request"),
-    ngx_null_string,  /* "422 Unprocessable Entity" */
-    ngx_null_string,  /* "423 Locked" */
-    ngx_null_string,  /* "424 Failed Dependency" */
-    ngx_null_string,  /* "425 unused" */
-    ngx_null_string,  /* "426 Upgrade Required" */
-    ngx_null_string,  /* "427 unused" */
-    ngx_null_string,  /* "428 Precondition Required" */
-    ngx_string("429 Too Many Requests"),
-
-#define NGX_HTTP_LAST_4XX  430
-#define NGX_HTTP_OFF_5XX   (NGX_HTTP_LAST_4XX - 400 + NGX_HTTP_OFF_4XX)
-
-    ngx_string("500 Internal Server Error"),
-    ngx_string("501 Not Implemented"),
-    ngx_string("502 Bad Gateway"),
-    ngx_string("503 Service Temporarily Unavailable"),
-    ngx_string("504 Gateway Time-out"),
-    ngx_string("505 HTTP Version Not Supported"),
-    ngx_null_string,        /* "506 Variant Also Negotiates" */
-    ngx_string("507 Insufficient Storage"),
-
-    /* ngx_null_string, */  /* "508 unused" */
-    /* ngx_null_string, */  /* "509 unused" */
-    /* ngx_null_string, */  /* "510 Not Extended" */
-
-#define NGX_HTTP_LAST_5XX  508
-
-};
-
-
 ngx_http_header_out_t  ngx_http_headers_out[] = {
     { ngx_string("Server"), offsetof(ngx_http_headers_out_t, server) },
     { ngx_string("Date"), offsetof(ngx_http_headers_out_t, date) },
@@ -162,10 +81,11 @@ ngx_http_header_filter(ngx_http_request_t *r)
 {
     u_char                    *p;
     size_t                     len;
-    ngx_str_t                  host, *status_line;
+    ngx_str_t                  host;
     ngx_buf_t                 *b;
     ngx_uint_t                 status, i, port;
     ngx_chain_t                out;
+    const ngx_str_t           *status_line;
     ngx_list_part_t           *part;
     ngx_table_elt_t           *header;
     ngx_connection_t          *c;
@@ -222,60 +142,41 @@ ngx_http_header_filter(ngx_http_request_t *r)
 
         status = r->headers_out.status;
 
-        if (status >= NGX_HTTP_OK
-            && status < NGX_HTTP_LAST_2XX)
-        {
-            /* 2XX */
+        /*
+         * The next two are effects of the status on the rest of the response
+         * rather than properties of the status itself, so they stay here and
+         * are deliberately not expressed as status registry flags: the
+         * registry describes a status and never decides anything.
+         */
 
-            if (status == NGX_HTTP_NO_CONTENT) {
-                r->header_only = 1;
-                ngx_str_null(&r->headers_out.content_type);
-                r->headers_out.last_modified_time = -1;
-                r->headers_out.last_modified = NULL;
-                r->headers_out.content_length = NULL;
-                r->headers_out.content_length_n = -1;
-            }
+        if (status == NGX_HTTP_NO_CONTENT) {
+            r->header_only = 1;
+            ngx_str_null(&r->headers_out.content_type);
+            r->headers_out.last_modified_time = -1;
+            r->headers_out.last_modified = NULL;
+            r->headers_out.content_length = NULL;
+            r->headers_out.content_length_n = -1;
+        }
 
-            status -= NGX_HTTP_OK;
-            status_line = &ngx_http_status_lines[status];
-            len += ngx_http_status_lines[status].len;
+        if (status == NGX_HTTP_NOT_MODIFIED) {
+            r->header_only = 1;
+        }
 
-        } else if (status >= NGX_HTTP_MOVED_PERMANENTLY
-                   && status < NGX_HTTP_LAST_3XX)
-        {
-            /* 3XX */
+        /*
+         * The registry holds the fused "NNN Phrase" form, exactly the bytes
+         * that follow "HTTP/1.1 " on the wire, so a status line is still
+         * emitted with a single copy.  A status with no phrase to emit, whether
+         * it is registered with an empty one or is not registered at all, falls
+         * back to three digits followed by a space.
+         */
 
-            if (status == NGX_HTTP_NOT_MODIFIED) {
-                r->header_only = 1;
-            }
+        status_line = ngx_http_status_reason(status);
 
-            status = status - NGX_HTTP_MOVED_PERMANENTLY + NGX_HTTP_OFF_3XX;
-            status_line = &ngx_http_status_lines[status];
-            len += ngx_http_status_lines[status].len;
-
-        } else if (status >= NGX_HTTP_BAD_REQUEST
-                   && status < NGX_HTTP_LAST_4XX)
-        {
-            /* 4XX */
-            status = status - NGX_HTTP_BAD_REQUEST
-                            + NGX_HTTP_OFF_4XX;
-
-            status_line = &ngx_http_status_lines[status];
-            len += ngx_http_status_lines[status].len;
-
-        } else if (status >= NGX_HTTP_INTERNAL_SERVER_ERROR
-                   && status < NGX_HTTP_LAST_5XX)
-        {
-            /* 5XX */
-            status = status - NGX_HTTP_INTERNAL_SERVER_ERROR
-                            + NGX_HTTP_OFF_5XX;
-
-            status_line = &ngx_http_status_lines[status];
-            len += ngx_http_status_lines[status].len;
+        if (status_line) {
+            len += status_line->len;
 
         } else {
             len += NGX_INT_T_LEN + 1 /* SP */;
-            status_line = NULL;
         }
 
         if (status_line && status_line->len == 0) {
