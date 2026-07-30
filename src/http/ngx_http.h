@@ -32,6 +32,7 @@ typedef u_char *(*ngx_http_log_handler_pt)(ngx_http_request_t *r,
 #include <ngx_http_variables.h>
 #include <ngx_http_config.h>
 #include <ngx_http_request.h>
+#include <ngx_http_status.h>
 #include <ngx_http_script.h>
 #include <ngx_http_upstream.h>
 #include <ngx_http_upstream_round_robin.h>
@@ -157,6 +158,13 @@ ngx_int_t ngx_http_special_response_handler(ngx_http_request_t *r,
 ngx_int_t ngx_http_filter_finalize_request(ngx_http_request_t *r,
     ngx_module_t *m, ngx_int_t error);
 void ngx_http_clean_header(ngx_http_request_t *r);
+
+
+ngx_int_t ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status);
+ngx_int_t ngx_http_status_validate(ngx_uint_t status);
+const ngx_str_t *ngx_http_status_reason(ngx_uint_t status);
+ngx_uint_t ngx_http_status_is_cacheable(ngx_uint_t status);
+ngx_int_t ngx_http_status_register(ngx_http_status_def_t *def);
 
 
 ngx_int_t ngx_http_discard_request_body(ngx_http_request_t *r);
