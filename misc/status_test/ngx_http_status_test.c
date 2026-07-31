@@ -2293,6 +2293,82 @@ ngx_http_status_test_run(void)
 }
 
 
+/*
+ * What src/core/nginx.c defines besides the main() this file replaces.
+ *
+ * The makefile beside this file leaves out exactly one object, the object of
+ * src/core/nginx.c, because that is the one object of the tree that defines
+ * main().  It defines four other things as well: the core module, which is
+ * the first entry of the generated ngx_modules[], and the three functions of
+ * src/core/ngx_cycle.h that live with it, which the cycle, the process and
+ * the upstream code call.  Leaving that object out therefore leaves those
+ * four undefined, so they are defined here: replacing a main() means taking
+ * over the rest of its file as well.
+ *
+ * The core module is one of no directives and no context callbacks, which is
+ * all that is wanted of it: nothing here runs a cycle, so nothing reads
+ * either, and only the address of the module is ever needed.  The three
+ * functions belong to starting, reloading and binding worker processes, none
+ * of which a run of these tests reaches, so each reports and stops rather
+ * than answer with something a caller would go on to trust.
+ */
+
+static ngx_core_module_t  ngx_http_status_test_core_ctx = {
+    ngx_string("core"),
+    NULL,
+    NULL
+};
+
+
+ngx_module_t  ngx_core_module = {
+    NGX_MODULE_V1,
+    &ngx_http_status_test_core_ctx,        /* module context */
+    NULL,                                  /* module directives */
+    NGX_CORE_MODULE,                       /* module type */
+    NULL,                                  /* init master */
+    NULL,                                  /* init module */
+    NULL,                                  /* init process */
+    NULL,                                  /* init thread */
+    NULL,                                  /* exit thread */
+    NULL,                                  /* exit process */
+    NULL,                                  /* exit master */
+    NGX_MODULE_V1_PADDING
+};
+
+
+char **
+ngx_set_environment(ngx_cycle_t *cycle, ngx_uint_t *last)
+{
+    ngx_log_stderr(0, "ngx_set_environment() was reached, which a run of "
+                      "these tests never does");
+    ngx_abort();
+
+    return NULL;
+}
+
+
+ngx_pid_t
+ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
+{
+    ngx_log_stderr(0, "ngx_exec_new_binary() was reached, which a run of "
+                      "these tests never does");
+    ngx_abort();
+
+    return NGX_INVALID_PID;
+}
+
+
+ngx_cpuset_t *
+ngx_get_cpu_affinity(ngx_uint_t n)
+{
+    ngx_log_stderr(0, "ngx_get_cpu_affinity() was reached, which a run of "
+                      "these tests never does");
+    ngx_abort();
+
+    return NULL;
+}
+
+
 int
 main(void)
 {
