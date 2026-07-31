@@ -43,6 +43,23 @@ and whether a status is eligible for the "expires" directive.
 
 <change type="change">
 <para lang="ru">
+теперь с помощью параметра configure
+--with-http_status_validation можно записывать в лог ошибок
+статусы, которые выбрал nginx или конфигурация
+и которые не описаны в реестре статусов;
+по умолчанию параметр выключен, и сам ответ не меняется.
+</para>
+<para lang="en">
+now the --with-http_status_validation configure option can be
+used to report to the error log a status that nginx or a
+configuration chose and that the status registry does not
+describe; the option is off by default, and the response
+itself is not changed.
+</para>
+</change>
+
+<change type="change">
+<para lang="ru">
 метод status() модуля ngx_http_perl_module
 требует статус меньше 1000 и не отрицательный;
 ранее принималось любое целое число.
