@@ -2898,9 +2898,9 @@ ngx_http_upstream_intercept_errors(ngx_http_request_t *r,
      * The status intercepted here was authored by the upstream and so is
      * exempt from validation, even though it re-enters nginx's own error
      * page machinery.  This second crossing of the upstream boundary is why
-     * the setter exempts validation by r->upstream rather than by call site;
-     * a site-scoped exemption would miss this path and reject valid
-     * responses once errors are intercepted.
+     * validation is exempted by r->upstream rather than by call site; a
+     * site-scoped exemption would miss this path and reject valid responses
+     * once errors are intercepted.
      */
 
     status = u->headers_in.status_n;
@@ -3176,7 +3176,7 @@ ngx_http_upstream_process_headers(ngx_http_request_t *r, ngx_http_upstream_t *u)
      * codes nginx does not know and codes below 100, both of which the
      * status line parser accepts.  The status setter is therefore not used
      * here: validation is exempted by the origin of the status, through the
-     * r->upstream != NULL test inside the setter, and not at this site.
+     * r->upstream != NULL test that every gate applies, and not at this site.
      */
 
     r->headers_out.status = u->headers_in.status_n;

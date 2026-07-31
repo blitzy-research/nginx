@@ -52,6 +52,15 @@ typedef struct {
 
 
 /*
+ * The registry also owns which row of the error page table a status code
+ * selects, so that no table outside it is keyed by status code, and this is
+ * the number of rows that mapping covers; it sizes that table.
+ */
+
+#define NGX_HTTP_STATUS_ERROR_PAGE_ROWS   53
+
+
+/*
  * A parameterized macro and not a function: the sources are ANSI C, which
  * has no keyword asking for a function to be expanded at its call site, and
  * a function with internal linkage defined in a header would be reported as
@@ -64,12 +73,48 @@ typedef struct {
     ((s) >= NGX_HTTP_STATUS_MIN && (s) < NGX_HTTP_STATUS_MAX)
 
 
+/*
+ * Whether a status can be written as the three digits that the HTTP/2 and
+ * HTTP/3 field encoders reserve room for.  The ":status" field of such a
+ * response is written into a field of exactly three bytes, and the width in a
+ * %03ui conversion is a minimum and not a limit: it pads a shorter value but
+ * never truncates a longer one, so a status of four digits or more would be
+ * written past the end of that field.  A status must therefore be below this
+ * bound before it reaches a response, whoever chose it, which is a wider range
+ * than ngx_http_status_in_range() admits and a stricter requirement than being
+ * described by the registry: a status relayed from an upstream is not
+ * validated, and may fall outside the range the registry covers, but is still
+ * emitted through those fields.  The argument is expanded once.
+ */
+
+#define NGX_HTTP_STATUS_WIRE_MAX  1000
+
+#define ngx_http_status_wire_width_ok(s)                                     \
+    ((s) < NGX_HTTP_STATUS_WIRE_MAX)
+
+
+#if (NGX_HTTP_STATUS_VALIDATION)
+
+/*
+ * The one place a status that nginx or a configuration chose and that the
+ * registry does not describe is reported, so that such a status is reported
+ * once for a request and reported the same way whatever protocol version the
+ * response uses.  It is called where a status is chosen and not where one is
+ * emitted or promoted.  A status an upstream chose is exempt.
+ */
+
+ngx_int_t ngx_http_status_report(ngx_http_request_t *r, ngx_uint_t status);
+
+#endif
+
+
 /* init() runs for every configuration parsed, seal() before workers fork */
 
 ngx_int_t ngx_http_status_init(ngx_conf_t *cf);
 void ngx_http_status_seal(void);
 ngx_uint_t ngx_http_status_effective(ngx_http_request_t *r);
 ngx_uint_t ngx_http_status_expires_ok(ngx_uint_t status);
+ngx_uint_t ngx_http_status_error_page_index(ngx_uint_t status);
 
 
 #endif /* _NGX_HTTP_STATUS_H_INCLUDED_ */

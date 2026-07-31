@@ -1859,19 +1859,49 @@ ngx_http_send_header(ngx_http_request_t *r)
     }
 
     /*
-     * The status is promoted here rather than chosen, so a strict build
-     * neither reports it again nor refuses it: it was reported where it was
-     * chosen, and the response has already been decided and has nothing left
-     * to redirect it to, which is why the result is discarded.  This is the
-     * last gate before the filter chain.  The status line is cleared here and
-     * not by the setter, which does not touch it, so that the promoted status
-     * is not sent under the status line of the one it replaced.
+     * The status is promoted here rather than chosen, so it is promoted and
+     * not set: a strict build neither validates it again nor refuses it, both
+     * because it was validated and reported where it was chosen, by the gate
+     * in ngx_http_special_response_handler() or by ngx_http_send_error_page(),
+     * and because the response has already been decided and has nothing left
+     * to redirect it to.  The status line is cleared here and not by the
+     * promotion, which does not touch it, so that the promoted status is not
+     * sent under the status line of the one it replaced.
      */
 
     if (r->err_status) {
-        (void) ngx_http_status_set(r, r->err_status);
+        ngx_http_status_promote(r, r->err_status);
 
         r->headers_out.status_line.len = 0;
+    }
+
+    /*
+     * The invariant that the fixed width ":status" of an HTTP/2 and of an
+     * HTTP/3 response rests on, tested once for every response whatever chose
+     * its status, because this is the last point a response passes through on
+     * its way to the filter chain that emits it.  Those encodings reserve room
+     * for exactly three digits, and the width in a %03ui conversion is a
+     * minimum that never truncates, so a status of four digits or more would
+     * be written past the end of what was reserved for it and such a response
+     * is refused rather than emitted.  The result of this test is not
+     * ignorable and the test is made in every build, because what can be
+     * emitted is a matter of memory safety and not of validation.
+     *
+     * The invariant then holds all the way to the encodings: a status that
+     * nginx chooses, here or in a header filter further along the chain, is
+     * held to the same bound by ngx_http_status_set(); the one status a
+     * configuration chooses, an error_page overwrite, is bounded where it is
+     * parsed; and a status relayed from an upstream is bounded to three digits
+     * as its status line is parsed.  Each encoder tests the bound again
+     * before it reserves the room, so a status reaching one by any other route
+     * cannot overrun it either.
+     */
+
+    if (!ngx_http_status_wire_width_ok(r->headers_out.status)) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "HTTP status %ui is too wide to be sent",
+                      r->headers_out.status);
+        return NGX_ERROR;
     }
 
     return ngx_http_top_header_filter(r);
@@ -4955,6 +4985,28 @@ ngx_http_core_error_page(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             if (overwrite == NGX_ERROR) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "invalid value \"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            /*
+             * An overwrite becomes the status of the response, and a status
+             * is written into a field of exactly three digits by the HTTP/2
+             * and HTTP/3 header filters, so it is bounded here, where it is
+             * chosen, as the "return" directive bounds its own code and as the
+             * status method of the embedded Perl module bounds the code it is
+             * given.  This is the only status a configuration chooses
+             * directly, and so the only one that is neither described by the
+             * status registry nor bounded to three digits as it is parsed from
+             * an upstream response; without this the value is only bounded by
+             * what fits in ngx_int_t.  Zero is not a status: it is the "=" and
+             * "=0" form, which keeps the status of what the request is
+             * redirected to.
+             */
+
+            if (overwrite != 0 && !ngx_http_status_in_range(overwrite)) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "value \"%V\" must be between 100 and 599",
+                                   &value[i]);
                 return NGX_CONF_ERROR;
             }
 

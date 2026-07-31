@@ -120,10 +120,33 @@ ngx_http_v3_header_filter(ngx_http_request_t *r)
     }
 
     /*
-     * The status tests below are left as comparisons rather than registry
-     * flag tests: no flag has the exact membership {200, 206, 304}, and a
-     * test for a single code is not expressible as a flag test at all.
+     * A status other than the one the QPACK static table covers is written
+     * below as a literal of exactly three digits: three bytes are reserved for
+     * it, three are declared as the length of the literal, and the width in
+     * the %03ui conversion that writes it is a minimum rather than a limit, so
+     * it never truncates and a wider status would be written past the end of
+     * the reservation.  A status that needs more is therefore refused here,
+     * before any room is reserved for it.
+     *
+     * Every author of a status keeps it to three digits: a registered status
+     * stays below NGX_HTTP_STATUS_MAX, a status relayed from an upstream is
+     * bounded while its status line is parsed, and the two a configuration
+     * supplies directly, the error_page overwrite and the status method of the
+     * embedded Perl module, are bounded where they are chosen.  That is checked
+     * here rather than assumed, so that what is reserved and what is written
+     * cannot disagree whatever authored the status, and it is checked in every
+     * build and not only in one configured with --with-http_status_validation,
+     * because it is what keeps the write within the reservation.  A status
+     * below 100 is left alone, because the status line parser accepts one from
+     * an upstream and three digits are written for it.
      */
+
+    if (!ngx_http_status_wire_width_ok(r->headers_out.status)) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "HTTP status %ui too wide for an HTTP/3 response",
+                      r->headers_out.status);
+        return NGX_ERROR;
+    }
 
     if (r->headers_out.last_modified_time != -1) {
         if (r->headers_out.status != NGX_HTTP_OK
@@ -154,6 +177,15 @@ ngx_http_v3_header_filter(ngx_http_request_t *r)
     ll = &out;
 
     len = ngx_http_v3_encode_field_section_prefix(NULL, 0, 0, 0);
+
+    /*
+     * A status other than 200 is written as exactly three digits.  The width
+     * in the %03ui conversion that writes it is a minimum rather than a limit
+     * and never truncates, so three bytes are only enough because a wider
+     * status is refused above, before anything is reserved, and again by the
+     * invariant in ngx_http_send_header() before a response reaches a filter
+     * chain.
+     */
 
     if (r->headers_out.status == NGX_HTTP_OK) {
         len += ngx_http_v3_encode_field_ri(NULL, 0,

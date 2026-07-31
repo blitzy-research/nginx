@@ -163,6 +163,30 @@ ngx_http_v2_header_filter(ngx_http_request_t *r)
         r->header_only = 1;
     }
 
+    /*
+     * A status the HPACK static table does not cover is written as exactly
+     * three digits, so a status that needs more is refused here, before any
+     * room is reserved for it.  Every status that reaches this filter is
+     * expected to be three digits wide already: a registered status stays
+     * below NGX_HTTP_STATUS_MAX, a status relayed from an upstream is bounded
+     * to three digits while its status line is parsed, and the two statuses a
+     * configuration supplies directly, from an error_page overwrite and from
+     * embedded Perl, are both range checked where they are chosen.  This
+     * check is what keeps that an invariant rather than an assumption, which
+     * is why it is made in every build: the width in the %03ui conversion
+     * below is a minimum and not a limit, so it never truncates and a wider
+     * status would be written past the end of what was reserved for it.  A
+     * status below 100 is left alone, because the status line parser accepts
+     * one from an upstream and three digits are written for it.
+     */
+
+    if (!ngx_http_status_wire_width_ok(r->headers_out.status)) {
+        ngx_log_error(NGX_LOG_ALERT, fc->log, 0,
+                      "HTTP status %ui too wide for an HTTP/2 response",
+                      r->headers_out.status);
+        return NGX_ERROR;
+    }
+
     switch (r->headers_out.status) {
 
     case NGX_HTTP_OK:
@@ -220,39 +244,18 @@ ngx_http_v2_header_filter(ngx_http_request_t *r)
     len = h2c->table_update ? 1 : 0;
 
     /*
-     * A status the HPACK static table does not cover is written as exactly
-     * three digits, and three are always enough.  The status registry accepts
-     * nothing that ngx_http_status_in_range() rejects, so a registered status
-     * stays below NGX_HTTP_STATUS_MAX and is three digits wide; a status
-     * relayed from an upstream is bounded to three digits while its status
-     * line is parsed; and the one status a configuration supplies directly,
-     * from embedded Perl, is range checked where it is set.  The width in the
-     * %03ui conversion below is a minimum rather than a limit and never
-     * truncates, so a wider value would be written past the end of what is
-     * reserved here instead of being cut short.
+     * A status the HPACK static table does not cover is written below as a
+     * literal of exactly three digits: three bytes are reserved here, three
+     * are declared as the length of the literal, and the width in the %03ui
+     * conversion that writes it is a minimum rather than a limit, so it never
+     * truncates.  Three are enough because a wider status is refused above,
+     * before anything is reserved, and again by the invariant in
+     * ngx_http_send_header() before a response reaches a filter chain, so that
+     * what is reserved and what is written cannot disagree whatever authored
+     * the status.
      */
 
     len += status ? 1 : 1 + ngx_http_v2_literal_size("418");
-
-#if (NGX_HTTP_STATUS_VALIDATION)
-
-    /*
-     * Reported and never corrected: an output filter emits the status the
-     * response already carries, and the status is not rewritten here.  A
-     * status relayed from an upstream is exempt, because such a status is
-     * whatever the upstream sent, including a value below
-     * NGX_HTTP_STATUS_MIN, which the status line parser accepts.
-     */
-
-    if (r->upstream == NULL
-        && ngx_http_status_validate(r->headers_out.status) != NGX_OK)
-    {
-        ngx_log_error(NGX_LOG_ALERT, fc->log, 0,
-                      "unregistered HTTP status %ui in HTTP/2 response",
-                      r->headers_out.status);
-    }
-
-#endif
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 

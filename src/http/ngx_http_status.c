@@ -20,7 +20,19 @@
 #define NGX_HTTP_STATUS_NBUILTIN   48
 
 
+/*
+ * A span of consecutive status codes that the error page table holds a row
+ * for; the spans below map a code to its row.
+ */
+
+typedef struct {
+    ngx_uint_t   first;                  /* first status code of the span */
+    ngx_uint_t   last;                   /* one past the last status code */
+} ngx_http_status_page_span_t;
+
+
 static ngx_http_status_def_t *ngx_http_status_lookup(ngx_uint_t status);
+static ngx_int_t ngx_http_status_error_page_check(void);
 
 
 /*
@@ -256,6 +268,30 @@ static ngx_uint_t  ngx_http_status_sealed;
 
 
 /*
+ * The error page table is a zero length row followed by three spans of
+ * consecutive status codes, and this table describes those spans, kept here
+ * because a table keyed by status code belongs to the registry.  Each entry is
+ * the half open range [first, last) of the codes one span covers, and the
+ * spans appear in ascending order.  A code selects a row by locating the span
+ * that covers it and adding its offset within that span to the row at which
+ * that span starts, so a span records only the codes it covers and the row it
+ * starts at follows from the spans before it.
+ *
+ * The spans must therefore account for every row of the table exactly once:
+ * 1 + (309 - 301) + (430 - 400) + (508 - 494) is the row count, 53, which
+ * ngx_http_status_error_page_check() verifies whenever the registry is
+ * initialized.
+ */
+
+static ngx_http_status_page_span_t  ngx_http_status_page_spans[] = {
+    { NGX_HTTP_MOVED_PERMANENTLY, 309 },
+    { NGX_HTTP_BAD_REQUEST, 430 },
+    { NGX_HTTP_NGINX_CODES, 508 },
+    { 0, 0 }
+};
+
+
+/*
  * The presence test that ngx_http_status_validate() answers with, applied
  * directly by ngx_http_status_set() so that setting a status tests the index
  * rather than calling a function to do it.  As in ngx_http_status_in_range(),
@@ -290,20 +326,53 @@ ngx_http_status_lookup(ngx_uint_t status)
 
 /*
  * The single entry point for a status that nginx chose itself, so that a
- * policy such as validation has one place to apply.  Only headers_out.status
- * and status_final are written, and a status is only ever rejected in a build
- * configured with --with-http_status_validation.
+ * policy such as validation has one place to apply.  headers_out.status and
+ * status_final are the only members written in every build; a build
+ * configured with --with-http_status_validation also maintains the
+ * status_reported bit.
  *
- * The store happens even when the status was rejected, so that the requested
- * status is never quietly replaced by the previous one; a rejection is
- * reported through the return value and the log alone.
+ * The two ways a status can be wrong are answered differently, because only
+ * one of them makes a response impossible to send.
  *
- * A status is reported once for the request, where it was chosen.  The error
- * status a request carries is chosen either by the handler that returned it,
- * which the single gate in ngx_http_special_response_handler() reports, or by
- * an error_page directive; where it is later promoted over the response status
- * it is not being chosen again, so promoting it does not report it again.
+ * A status too wide for the fixed width ":status" of an HTTP/2 or an HTTP/3
+ * response cannot be sent at all, so it is refused in every build: the return
+ * value says so, a caller that has an error path of its own answers the
+ * request with 500 instead, and ngx_http_send_header() refuses it once more
+ * and unconditionally, being the last point a status passes through before the
+ * filter chain that emits it.
+ *
+ * A status the registry does not describe is, by contrast, perfectly sendable,
+ * and it is only looked for in a build configured with
+ * --with-http_status_validation.  It is reported and nothing more: the
+ * response still carries the status that was chosen for it.  Answering such a
+ * request with 500 would make a response depend on a build option, which is
+ * the one thing this work may not do, and would leave a build whose purpose is
+ * to check that responses are unchanged unable to do so, since a status such
+ * as the 306 that a "return" directive may name is sendable but is not a code
+ * the registry describes.
+ *
+ * The store happens even when the status was refused, so that the requested
+ * status is never quietly replaced by the previous one.
+ *
+ * Reporting belongs to ngx_http_status_report(), which is called from each of
+ * the points at which a status is chosen: from here for a status a caller
+ * chose, from the single gate in ngx_http_special_response_handler() for one a
+ * handler returned, and from ngx_http_send_error_page() for one an error_page
+ * directive supplied.  A status an upstream chose is exempt there, and an
+ * error status that is later moved into the response over the response status
+ * is not being chosen again, so it is promoted with ngx_http_status_promote()
+ * rather than set and is neither validated nor reported a second time.
+ *
+ * ngx_http.h makes this name a macro in a build that does not validate a
+ * status, so that the stores for a status narrow enough to be sent are made
+ * where the status is set rather than through a call; a wider one is passed to
+ * this function, which refuses it, so that the refusal is made and reported
+ * the same way in either build.  The name is undefined here for the definition
+ * below, which is compiled and exported in either build so that a module built
+ * against one build of nginx still resolves it in another.
  */
+
+#undef ngx_http_status_set
 
 ngx_int_t
 ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
@@ -312,32 +381,28 @@ ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
 
     rc = NGX_OK;
 
+    if (!ngx_http_status_wire_width_ok(status)) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "HTTP status %ui is too wide to be sent", status);
+        rc = NGX_ERROR;
+    }
+
 #if (NGX_HTTP_STATUS_VALIDATION)
 
     /*
-     * The exemption is scoped to the origin of the status rather than to the
-     * call site, because an upstream status is relayed faithfully and the
-     * upstream boundary is crossed in more than one place, including the path
-     * that intercepts an upstream error and re-enters nginx's own error page
-     * machinery while still carrying the upstream status.
+     * Reported and not refused, so that the response is the same one a build
+     * without validation would send.  A status that no response can carry was
+     * reported as such already, and is not reported a second time here.
      */
 
-    if (r->upstream == NULL && !ngx_http_status_present(status)) {
-
-        /* a promoted error status was already reported where it was chosen */
-
-        if (status != r->err_status) {
-            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                          "unregistered HTTP status %ui", status);
-        }
-
-        rc = NGX_ERROR;
+    if (rc == NGX_OK) {
+        (void) ngx_http_status_report(r, status);
     }
 
     /*
      * A status may legitimately be set again after the response has been
      * decided, for instance so that the access log records that a client
-     * closed the connection; this is therefore reported and never refused.
+     * closed the connection; this is therefore only noted and never refused.
      */
 
     if (r->status_final) {
@@ -363,6 +428,57 @@ ngx_http_status_validate(ngx_uint_t status)
 
     return NGX_OK;
 }
+
+
+#if (NGX_HTTP_STATUS_VALIDATION)
+
+/*
+ * The one place a status the registry does not describe is reported, so that
+ * such a status is reported once for a request and reported the same way
+ * whatever protocol version the response uses.  It is called from each of the
+ * three points at which nginx or a configuration chooses a status: the gate in
+ * ngx_http_special_response_handler(), which sees the status a handler returned
+ * and finalized the request with, the error_page directive that overwrites that
+ * status, and ngx_http_status_set().  Promoting or emitting a status is not
+ * choosing it, so a later write of an already reported status, such as moving
+ * the error status of a request over its response status or recording a status
+ * for the access log alone, is silent.
+ *
+ * Whether a status was reported is kept on the request itself, and is never
+ * inferred from the status having the same value as the error status the
+ * request already carries: equal values are not evidence that the value was
+ * ever validated, since err_status has authors of its own.  The request scoped
+ * flag is therefore what keeps a chosen status from being reported twice.
+ *
+ * The exemption is scoped to the origin of the status rather than to the call
+ * site, because an upstream status is relayed faithfully and the upstream
+ * boundary is crossed in more than one place, including the path that
+ * intercepts an upstream error and re-enters nginx's own error page machinery
+ * while still carrying the upstream status.
+ *
+ * The status is only ever reported, never replaced: a response is never given a
+ * status other than the one that was chosen for it, and the caller stores what
+ * was asked for.
+ */
+
+ngx_int_t
+ngx_http_status_report(ngx_http_request_t *r, ngx_uint_t status)
+{
+    if (r->upstream != NULL || ngx_http_status_present(status)) {
+        return NGX_OK;
+    }
+
+    if (!r->status_reported) {
+        r->status_reported = 1;
+
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "unregistered HTTP status %ui", status);
+    }
+
+    return NGX_ERROR;
+}
+
+#endif
 
 
 /*
@@ -489,7 +605,7 @@ ngx_http_status_init(ngx_conf_t *cf)
         ngx_http_status_index[code - NGX_HTTP_STATUS_MIN] = (u_short) i;
     }
 
-    return NGX_OK;
+    return ngx_http_status_error_page_check();
 }
 
 
@@ -546,4 +662,72 @@ ngx_http_status_expires_ok(ngx_uint_t status)
     }
 
     return def->flags & NGX_HTTP_STATUS_EXPIRES_OK;
+}
+
+
+/*
+ * The row of the error page table that a status code selects.  A code that no
+ * span covers, whether it falls between the spans as 444 does or lies outside
+ * them altogether, selects the zero length row.
+ *
+ * A span covers every code in its range, including a code the registry does
+ * not define: the row for 498 holds the 404 page, which is how nginx answers
+ * a request whose host name is invalid, and the rows for the other codes the
+ * registry does not define hold no page at all.  The rows therefore follow
+ * the shape of the table and not the membership of the registry.
+ */
+
+ngx_uint_t
+ngx_http_status_error_page_index(ngx_uint_t status)
+{
+    ngx_uint_t                    row;
+    ngx_http_status_page_span_t  *span;
+
+    row = 1;
+
+    for (span = ngx_http_status_page_spans; span->first; span++) {
+
+        if (status < span->first) {
+            break;
+        }
+
+        if (status < span->last) {
+            return row + (status - span->first);
+        }
+
+        row += span->last - span->first;
+    }
+
+    /* a code with no row of its own, so a zero length body */
+
+    return 0;
+}
+
+
+/* the spans and the row count are edited by hand, so they are checked */
+
+static ngx_int_t
+ngx_http_status_error_page_check(void)
+{
+    ngx_uint_t                    last, rows;
+    ngx_http_status_page_span_t  *span;
+
+    last = 0;
+    rows = 1;
+
+    for (span = ngx_http_status_page_spans; span->first; span++) {
+
+        if (span->first < last || span->last <= span->first) {
+            return NGX_ERROR;
+        }
+
+        rows += span->last - span->first;
+        last = span->last;
+    }
+
+    if (rows != NGX_HTTP_STATUS_ERROR_PAGE_ROWS) {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
 }

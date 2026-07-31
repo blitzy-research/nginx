@@ -557,7 +557,6 @@ struct ngx_http_request_s {
     unsigned                          logged:1;
     unsigned                          terminated:1;
 
-    unsigned                          status_final:1;
     unsigned                          buffered:4;
 
     unsigned                          main_filter_need_in_memory:1;
@@ -574,6 +573,28 @@ struct ngx_http_request_s {
 
     unsigned                          background:1;
     unsigned                          health_check:1;
+
+    /*
+     * the bookkeeping of the status code registry: status_final records that a
+     * response status has been chosen for the request and status_reported that
+     * a status the registry does not describe has been reported for it.  They
+     * are bit fields in the request structure rather than module context data,
+     * following limit_conn_status and limit_req_status above; the request pool
+     * they live in is private to a request, so no thread local storage is
+     * needed
+     *
+     * they are added unconditionally, and not only in a build configured with
+     * --with-http_status_validation, so that the layout of this structure
+     * never depends on a build option; and they are added at the end of this
+     * bit field run, where the compiler had padding left before the aligned
+     * member that follows, so that the storage unit and the bit position of
+     * every member above is unchanged.  The size of the structure alone does
+     * not prove that, because inserting a bit anywhere else leaves the size
+     * and the module signature unchanged while moving every bit that follows it
+     */
+
+    unsigned                          status_final:1;
+    unsigned                          status_reported:1;
 
     /* used to parse HTTP headers */
 
