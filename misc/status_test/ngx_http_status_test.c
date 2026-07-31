@@ -12,52 +12,58 @@
 
 /*
  * A driver for the HTTP status code registry.  It exercises the five
- * functions the registry publishes through <ngx_http.h>, the five it
+ * functions the registry publishes through <ngx_http.h>, the seven it
  * publishes through its own header, the macros both of those headers define,
  * and the lifecycle that leaves the registry writable only while a
  * configuration is parsed.
  *
- * The driver is linked against the object tree of a build of nginx, with the
- * one object that defines main() left out, by the makefile beside this file.
- * Nothing in the build depends on it and auto/configure does not know of it:
- * it is made on request.  It reports on the standard error output and exits
- * zero only when every check passed, so that a script may run it.
+ * The driver is linked against the object tree of a build of nginx by the
+ * makefile beside this file:
+ *
+ *     make -f misc/status_test/GNUmakefile test
+ *
+ * That makefile links every object of the build but the one which defines
+ * main(), and this file defines in its place the four other symbols that
+ * object defines and the rest of the tree refers to, so that no source of
+ * nginx is compiled a second time and the registry examined here is the one
+ * that ships rather than a copy of it.  Nothing in the build depends on this
+ * file and auto/configure does not know of it: it is made on request.  It
+ * reports on the standard error output and exits zero only when every check
+ * passed, so that a script may run it.
  *
  * The registry's own header is not included here.  <ngx_http.h> includes it,
  * which is how every other file in the tree reaches the registry, so this one
  * reaches it the same way and would notice were that to stop being true.
- *
- * Where an expectation here and the registry disagree, the registry is what
- * ships and this file is what is wrong about it, or the registry has a defect;
- * either way the disagreement is worth reporting rather than papering over, so
- * no check is weakened to make a run pass.
  */
 
-
-/* the number of elements of an array whose size is known here */
 
 #define ngx_http_status_test_nelts(a)   (sizeof(a) / sizeof((a)[0]))
 
 
 /*
- * The rows the registry keeps for codes a module may register.  It is the
- * headroom the registry documents rather than the size of its table, which is
- * private to it: exhaustion is found by registering until a registration is
- * refused, and this is only how many must have been accepted by then.
+ * How many definitions a module may register.  Exhaustion is found by
+ * registering until a registration is refused, and this is how many must have
+ * been accepted by then.
  */
 
 #define NGX_HTTP_STATUS_TEST_HEADROOM   15
 
 
-/*
- * How many codes of the range the registry describes without a module having
- * registered any, and how many of those carry a phrase for a status line.  A
- * code with no phrase is emitted as three digits and a space, which is what
- * nginx sent for it before the registry existed.
- */
-
 #define NGX_HTTP_STATUS_TEST_NBUILTIN   48
 #define NGX_HTTP_STATUS_TEST_NPHRASE    36
+
+
+/*
+ * Every flag the registry defines, as one word.  A row is expected to carry
+ * some subset of these and nothing besides, so a flag added to the registry
+ * must be added here and to the table of the sets that carry it, and until it
+ * is the driver says so rather than passing on a row it knows nothing about.
+ */
+
+#define NGX_HTTP_STATUS_TEST_ALL_FLAGS                                       \
+    (NGX_HTTP_STATUS_CACHEABLE|NGX_HTTP_STATUS_INFORMATIONAL                 \
+     |NGX_HTTP_STATUS_CLIENT_ERROR|NGX_HTTP_STATUS_SERVER_ERROR              \
+     |NGX_HTTP_STATUS_EXPIRES_OK|NGX_HTTP_STATUS_INTERNAL)
 
 
 /*
@@ -85,21 +91,35 @@ typedef struct {
 
 typedef struct {
     ngx_uint_t   code;
-    ngx_str_t    kept;                   /* the phrase nginx has always sent */
-    ngx_str_t    rfc;                    /* the name RFC 9110 recommends */
+    ngx_str_t    kept;                   /* nginx wire phrase */
+    ngx_str_t    rfc;                    /* RFC 9110 canonical name */
 } ngx_http_status_test_diverge_t;
 
 
 typedef struct {
     ngx_uint_t   code;
-    ngx_uint_t   row;                    /* row of the error page table */
+    ngx_uint_t   row;
 } ngx_http_status_test_page_t;
+
+
+typedef struct {
+    ngx_uint_t   flag;
+    ngx_uint_t  *set;                    /* the codes that carry it */
+    ngx_uint_t   n;
+    const char  *what;                   /* said of a code answered for badly */
+} ngx_http_status_test_flag_t;
+
+
+typedef struct {
+    ngx_uint_t   code;
+    const char  *section;                /* where the code is recorded from */
+} ngx_http_status_test_section_t;
 
 
 typedef struct {
     ngx_int_t  (*run)(void);
     const char  *name;
-    ngx_uint_t   init;                   /* initialize the registry first */
+    ngx_uint_t   init;
 } ngx_http_status_test_case_t;
 
 
@@ -109,6 +129,8 @@ static ngx_int_t ngx_http_status_test_check_code(ngx_uint_t ok,
 static ngx_uint_t ngx_http_status_test_member(ngx_uint_t code, ngx_uint_t *set,
     ngx_uint_t n);
 static ngx_uint_t ngx_http_status_test_described(void);
+static ngx_uint_t ngx_http_status_test_want_flags(ngx_uint_t code);
+static ngx_str_t *ngx_http_status_test_phrase(ngx_uint_t code);
 static ngx_http_request_t *ngx_http_status_test_req(void);
 static void ngx_http_status_test_writer(ngx_log_t *log, ngx_uint_t level,
     u_char *buf, size_t len);
@@ -117,7 +139,9 @@ static void ngx_http_status_test_fill(ngx_http_status_def_t *def,
 
 static ngx_int_t ngx_http_status_test_preinit(void);
 static ngx_int_t ngx_http_status_test_signatures(void);
+static ngx_int_t ngx_http_status_test_signatures_write(void);
 static ngx_int_t ngx_http_status_test_helper_signatures(void);
+static ngx_int_t ngx_http_status_test_metadata_signatures(void);
 static ngx_int_t ngx_http_status_test_complete(void);
 static ngx_int_t ngx_http_status_test_undescribed(void);
 static ngx_int_t ngx_http_status_test_reasons(void);
@@ -128,13 +152,22 @@ static ngx_int_t ngx_http_status_test_cacheable(void);
 static ngx_int_t ngx_http_status_test_expires(void);
 static ngx_int_t ngx_http_status_test_separation(void);
 static ngx_int_t ngx_http_status_test_difference(void);
+static ngx_int_t ngx_http_status_test_flag_sets(void);
+static ngx_int_t ngx_http_status_test_flag_words(void);
+static ngx_int_t ngx_http_status_test_sections(void);
+static ngx_int_t ngx_http_status_test_provenance(void);
+static ngx_int_t ngx_http_status_test_divergent_sections(void);
 static ngx_int_t ngx_http_status_test_internal(void);
+static ngx_int_t ngx_http_status_test_internal_flags(void);
 static ngx_int_t ngx_http_status_test_no_row(ngx_uint_t *set, ngx_uint_t n);
 static ngx_int_t ngx_http_status_test_register(void);
 static ngx_int_t ngx_http_status_test_register_refuses(void);
 static ngx_int_t ngx_http_status_test_sealed(void);
 static ngx_int_t ngx_http_status_test_copied(void);
+static ngx_int_t ngx_http_status_test_copied_metadata(void);
 static ngx_int_t ngx_http_status_test_exhaustion(void);
+static ngx_int_t ngx_http_status_test_builtin(ngx_uint_t code);
+static ngx_int_t ngx_http_status_test_builtins(void);
 static ngx_int_t ngx_http_status_test_cycle(void);
 static ngx_int_t ngx_http_status_test_idempotent(void);
 static ngx_int_t ngx_http_status_test_ranges(void);
@@ -149,16 +182,16 @@ static ngx_int_t ngx_http_status_test_error_pages(void);
 static ngx_int_t ngx_http_status_test_report(void);
 static ngx_int_t ngx_http_status_test_report_exempts(void);
 static ngx_int_t ngx_http_status_test_set_reports(void);
+static ngx_int_t ngx_http_status_test_set_relayed(void);
+static ngx_int_t ngx_http_status_test_set_mixed(void);
 #endif
 static ngx_int_t ngx_http_status_test_run(void);
 
 
 /*
- * Every code the registry describes: the union of the codes nginx defines a
- * constant for, the codes its status line table held a phrase for, the codes
- * its error page table held a body for, and the codes RFC 9110 defines.  The
- * four that nginx defines no constant for at all are written as numbers, and
- * so are read from the phrase each is expected to carry as well.
+ * Every code the registry describes.  Four of them have no constant of their
+ * own, so they are written as numbers here, and are read from the phrase each
+ * is expected to carry as well.
  */
 
 static ngx_uint_t  ngx_http_status_test_codes[] = {
@@ -207,9 +240,8 @@ static ngx_uint_t  ngx_http_status_test_codes[] = {
 /*
  * The phrase each code carries, in the fused form the registry holds: exactly
  * the bytes that follow "HTTP/1.1 " in a status line, so that a status line is
- * still emitted with a single copy.  These are the bytes nginx sent before the
- * registry existed and they are asserted byte for byte, the eight of them that
- * differ from the name RFC 9110 recommends included.
+ * still emitted with a single copy.  They are asserted byte for byte, those
+ * that differ from the RFC 9110 canonical name included.
  */
 
 static ngx_http_status_test_reason_t  ngx_http_status_test_phrases[] = {
@@ -268,13 +300,11 @@ static ngx_http_status_test_reason_t  ngx_http_status_test_phrases[] = {
 
 /*
  * The codes the registry describes that carry no phrase, so that a response
- * with one of them is emitted as three digits and a space.  This is asserted
- * as deliberately as the phrases are: giving 100 a phrase would send
- * "HTTP/1.1 100 Continue" where nginx sends "HTTP/1.1 100 ", which is a
- * change to what is sent and so is not admissible.
- *
- * The separate "100 Continue" and "103 Early Hints" lines that nginx does send
- * come from constants of their own and are not driven by the registry.
+ * with one of them is emitted as three digits and a space.  Giving 100 a
+ * phrase would send "HTTP/1.1 100 Continue" where nginx sends "HTTP/1.1 100 ",
+ * which is a change to what is sent.  The separate "100 Continue" and
+ * "103 Early Hints" lines nginx does send come from constants of their own and
+ * are not driven by the registry.
  */
 
 static ngx_uint_t  ngx_http_status_test_empty[] = {
@@ -299,9 +329,7 @@ static ngx_uint_t  ngx_http_status_test_cacheable_set[] = {
 
 /*
  * The codes nginx's own "expires" processing is eligible for, which is a
- * different question from the one above and a different set of codes.  It was
- * read from the two switch statements of the headers filter, which listed
- * exactly these ten.
+ * different question from the one above and a different set of codes.
  */
 
 static ngx_uint_t  ngx_http_status_test_expires_set[] = {
@@ -338,6 +366,113 @@ static ngx_uint_t  ngx_http_status_test_internal_set[] = {
 
 
 /*
+ * The three classes of code the registry flags, which is what replaced the
+ * arithmetic on a code's value that told them apart before it existed.  Every
+ * 1xx code it describes is informational, every 4xx a client error, nginx's own
+ * six included, and every 5xx a server error; a code of no class, 200 among
+ * them, carries none of the three.
+ */
+
+static ngx_uint_t  ngx_http_status_test_informational_set[] = {
+    NGX_HTTP_CONTINUE, NGX_HTTP_SWITCHING_PROTOCOLS,
+    NGX_HTTP_PROCESSING, NGX_HTTP_EARLY_HINTS
+};
+
+
+static ngx_uint_t  ngx_http_status_test_client_error_set[] = {
+    NGX_HTTP_BAD_REQUEST, NGX_HTTP_UNAUTHORIZED, 402,
+    NGX_HTTP_FORBIDDEN, NGX_HTTP_NOT_FOUND, NGX_HTTP_NOT_ALLOWED, 406,
+    NGX_HTTP_REQUEST_TIME_OUT, NGX_HTTP_CONFLICT, 410,
+    NGX_HTTP_LENGTH_REQUIRED, NGX_HTTP_PRECONDITION_FAILED,
+    NGX_HTTP_REQUEST_ENTITY_TOO_LARGE, NGX_HTTP_REQUEST_URI_TOO_LARGE,
+    NGX_HTTP_UNSUPPORTED_MEDIA_TYPE, NGX_HTTP_RANGE_NOT_SATISFIABLE,
+    NGX_HTTP_MISDIRECTED_REQUEST, NGX_HTTP_TOO_MANY_REQUESTS,
+    NGX_HTTP_CLOSE, NGX_HTTP_NGINX_CODES, NGX_HTTPS_CERT_ERROR,
+    NGX_HTTPS_NO_CERT, NGX_HTTP_TO_HTTPS, NGX_HTTP_CLIENT_CLOSED_REQUEST
+};
+
+
+static ngx_uint_t  ngx_http_status_test_server_error_set[] = {
+    NGX_HTTP_INTERNAL_SERVER_ERROR, NGX_HTTP_NOT_IMPLEMENTED,
+    NGX_HTTP_BAD_GATEWAY, NGX_HTTP_SERVICE_UNAVAILABLE,
+    NGX_HTTP_GATEWAY_TIME_OUT, NGX_HTTP_VERSION_NOT_SUPPORTED,
+    NGX_HTTP_INSUFFICIENT_STORAGE
+};
+
+
+/*
+ * Each flag beside the codes that carry it, so that every flag of every code
+ * of the range can be asked for and a failure can name both the flag and the
+ * code.  What is said of a code is said in full here because the check that
+ * says it knows only which flag it was asking about.
+ */
+
+static ngx_http_status_test_flag_t  ngx_http_status_test_flags[] = {
+
+    { NGX_HTTP_STATUS_CACHEABLE, ngx_http_status_test_cacheable_set,
+      ngx_http_status_test_nelts(ngx_http_status_test_cacheable_set),
+      "is not flagged heuristically cacheable as RFC 9110 section 15.1 "
+      "expects" },
+
+    { NGX_HTTP_STATUS_INFORMATIONAL, ngx_http_status_test_informational_set,
+      ngx_http_status_test_nelts(ngx_http_status_test_informational_set),
+      "is not flagged informational as the 1xx codes described are" },
+
+    { NGX_HTTP_STATUS_CLIENT_ERROR, ngx_http_status_test_client_error_set,
+      ngx_http_status_test_nelts(ngx_http_status_test_client_error_set),
+      "is not flagged a client error as the 4xx codes described are" },
+
+    { NGX_HTTP_STATUS_SERVER_ERROR, ngx_http_status_test_server_error_set,
+      ngx_http_status_test_nelts(ngx_http_status_test_server_error_set),
+      "is not flagged a server error as the 5xx codes described are" },
+
+    { NGX_HTTP_STATUS_EXPIRES_OK, ngx_http_status_test_expires_set,
+      ngx_http_status_test_nelts(ngx_http_status_test_expires_set),
+      "is not flagged eligible for expires as nginx's own set is" },
+
+    { NGX_HTTP_STATUS_INTERNAL, ngx_http_status_test_internal_set,
+      ngx_http_status_test_nelts(ngx_http_status_test_internal_set),
+      "is not flagged one of nginx's own codes as those six are" }
+};
+
+
+/*
+ * Where a code is recorded as coming from, for one code out of each
+ * specification the registry cites and for one of nginx's own.  The eight
+ * codes whose phrase differs from the name RFC 9110 recommends are all named
+ * here as well, because the section reference is where that name is kept.
+ */
+
+static ngx_http_status_test_section_t  ngx_http_status_test_provenances[] = {
+
+    { NGX_HTTP_CONTINUE, "RFC 9110 section 15.2.1" },
+    { NGX_HTTP_PROCESSING, "RFC 2518 section 10.1" },
+    { NGX_HTTP_EARLY_HINTS, "RFC 8297 section 2" },
+    { NGX_HTTP_OK, "RFC 9110 section 15.3.1" },
+    { NGX_HTTP_NOT_FOUND, "RFC 9110 section 15.5.5" },
+    { NGX_HTTP_TOO_MANY_REQUESTS, "RFC 6585 section 4" },
+    { NGX_HTTP_INSUFFICIENT_STORAGE, "RFC 4918 section 11.5" },
+    { NGX_HTTP_CLOSE, "nginx internal" },
+
+    { NGX_HTTP_MOVED_TEMPORARILY, "RFC 9110 section 15.4.3 (Found)" },
+    { NGX_HTTP_NOT_ALLOWED,
+      "RFC 9110 section 15.5.6 (Method Not Allowed)" },
+    { NGX_HTTP_REQUEST_TIME_OUT,
+      "RFC 9110 section 15.5.9 (Request Timeout)" },
+    { NGX_HTTP_REQUEST_ENTITY_TOO_LARGE,
+      "RFC 9110 section 15.5.14 (Content Too Large)" },
+    { NGX_HTTP_REQUEST_URI_TOO_LARGE,
+      "RFC 9110 section 15.5.15 (URI Too Long)" },
+    { NGX_HTTP_RANGE_NOT_SATISFIABLE,
+      "RFC 9110 section 15.5.17 (Range Not Satisfiable)" },
+    { NGX_HTTP_SERVICE_UNAVAILABLE,
+      "RFC 9110 section 15.6.4 (Service Unavailable)" },
+    { NGX_HTTP_GATEWAY_TIME_OUT,
+      "RFC 9110 section 15.6.5 (Gateway Timeout)" }
+};
+
+
+/*
  * Codes of the range that the registry does not describe.  Most held an empty
  * slot in the status line table the registry replaced, and 498 never had a
  * constant at all: it is recorded in a comment beside nginx's own codes and is
@@ -359,12 +494,12 @@ static ngx_uint_t  ngx_http_status_test_outside[] = {
 
 
 /*
- * The eight phrases that differ from the name RFC 9110 recommends.  A reason
- * phrase is a recommendation only, which is what lets the registry be both
- * correct by that specification and byte compatible with what nginx sends: the
- * phrase carries nginx's bytes and the name from the specification is recorded
- * in the section reference beside it.  Both forms are named here so that a
- * change of one of them into the other fails loudly rather than quietly.
+ * The phrases that differ from the RFC 9110 canonical name.  A reason phrase
+ * is a recommendation only, which is what lets the registry be both correct by
+ * that specification and byte compatible with what nginx sends: the phrase
+ * carries nginx's bytes and the canonical name is recorded in the section
+ * reference beside it.  Both forms are named here so that a change of one of
+ * them into the other fails loudly.
  */
 
 static ngx_http_status_test_diverge_t  ngx_http_status_test_divergent[] = {
@@ -396,8 +531,8 @@ static ngx_http_status_test_diverge_t  ngx_http_status_test_divergent[] = {
  * The row of the error page table a code selects.  The rows follow the shape
  * of that table and not the membership of the registry: a code the registry
  * does not describe still selects a row when it falls within one of the spans
- * of consecutive codes the table holds, which is how 498 is answered with the
- * body of a 404, and a code no span covers selects the row of zero length.
+ * of consecutive codes the table holds, and a code no span covers selects the
+ * row of zero length.
  */
 
 static ngx_http_status_test_page_t  ngx_http_status_test_pages[] = {
@@ -420,8 +555,6 @@ static ngx_http_status_test_page_t  ngx_http_status_test_pages[] = {
     { 508, 0 }, { 599, 0 }, { 0, 0 }, { 1000, 0 }
 };
 
-
-/* the bounds of the range the registry covers, and one code either side */
 
 static ngx_uint_t  ngx_http_status_test_range_probe[] = {
     0, 1, 99, 100, 101, 300, 598, 599, 600, 601, 1000
@@ -465,17 +598,16 @@ static ngx_uint_t  ngx_http_status_test_alerts;
 
 
 /*
- * A zero initialized instance of the request, of the connection it is answered
+ * A zero-initialized instance of the request, of the connection it is answered
  * on, and of the log that connection reports through, each of them the type
- * nginx itself uses rather than anything standing in for one.  A request is
- * allocated from a pool and zeroed when nginx creates it, so a zeroed request
- * is a request in the state nginx starts one in, and the members read here are
- * the three the effective status is chosen from and the log an alert is
- * reported through.
+ * nginx itself uses.  A request is allocated from a pool and zeroed when nginx
+ * creates it, so a zeroed request is a request in the state nginx starts one
+ * in, and the members read here are the three the effective status is chosen
+ * from and the log an alert is reported through.
  *
- * The log is wired to the standard error output and given a writer, which is
- * the hook nginx's own logging offers and which is used here to count the
- * alerts a check produced, so that reporting is observed and not inferred.
+ * The log carries a writer, which is the hook nginx's own logging offers and
+ * which nginx calls in place of writing to the log's own file, so that the
+ * alerts a check produced are counted rather than inferred.
  */
 
 static ngx_http_request_t   ngx_http_status_test_r;
@@ -535,8 +667,6 @@ ngx_http_status_test_member(ngx_uint_t code, ngx_uint_t *set, ngx_uint_t n)
 }
 
 
-/* how many codes of the whole range the registry describes */
-
 static ngx_uint_t
 ngx_http_status_test_described(void)
 {
@@ -552,6 +682,53 @@ ngx_http_status_test_described(void)
     }
 
     return n;
+}
+
+
+/* the flags a code is expected to carry, assembled from the sets above */
+
+static ngx_uint_t
+ngx_http_status_test_want_flags(ngx_uint_t code)
+{
+    ngx_uint_t                    i, n, want;
+    ngx_http_status_test_flag_t  *f;
+
+    want = 0;
+    n = ngx_http_status_test_nelts(ngx_http_status_test_flags);
+
+    for (i = 0; i < n; i++) {
+        f = &ngx_http_status_test_flags[i];
+
+        if (ngx_http_status_test_member(code, f->set, f->n)) {
+            want |= f->flag;
+        }
+    }
+
+    return want;
+}
+
+
+/*
+ * The phrase a code is expected to carry, or nothing where the code is one of
+ * those the registry describes without a phrase.  The two are told apart by the
+ * caller, which is the distinction the registry itself draws.
+ */
+
+static ngx_str_t *
+ngx_http_status_test_phrase(ngx_uint_t code)
+{
+    ngx_uint_t  i, n;
+
+    n = ngx_http_status_test_nelts(ngx_http_status_test_phrases);
+
+    for (i = 0; i < n; i++) {
+
+        if (ngx_http_status_test_phrases[i].code == code) {
+            return &ngx_http_status_test_phrases[i].reason;
+        }
+    }
+
+    return NULL;
 }
 
 
@@ -592,9 +769,9 @@ ngx_http_status_test_writer(ngx_log_t *log, ngx_uint_t level, u_char *buf,
 
 
 /*
- * A definition of the shape a module would register, filled in completely.
- * The registry copies the definition and not the bytes its members point to,
- * so both of those point at storage that outlives any registration.
+ * A definition of the shape a module would register.  The registry copies the
+ * definition and not the bytes its members point to, so a member that does
+ * point at bytes must point at bytes that outlive the registration.
  */
 
 static void
@@ -611,8 +788,7 @@ ngx_http_status_test_fill(ngx_http_status_def_t *def, ngx_uint_t code)
 /*
  * Before the registry is initialized its index is empty, so it describes
  * nothing.  That is the state a process is in before it has parsed a
- * configuration, and it is asserted once, here, because every group that
- * follows runs with an initialized registry.
+ * configuration.
  */
 
 static ngx_int_t
@@ -670,92 +846,181 @@ ngx_http_status_test_preinit(void)
  * The published prototypes, taken through pointers of the exact declared type.
  * A change to any of them, the constness of the phrase a code carries
  * included, stops this from compiling, which is the point: what other files
- * link against must not drift.
+ * link against must not drift.  Each function is then asked one question of its
+ * own, so that a failure names the function that answered wrongly rather than
+ * saying only that one of them did.
+ *
+ * These three answer about a status and change nothing.
  */
 
 static ngx_int_t
 ngx_http_status_test_signatures(void)
 {
-    ngx_int_t              rc;
-    const ngx_str_t       *reason;
-    ngx_http_request_t    *r;
-    ngx_http_status_def_t  def;
+    ngx_int_t         rc;
+    const ngx_str_t  *reason;
 
-    ngx_int_t        (*set)(ngx_http_request_t *r, ngx_uint_t status);
     ngx_int_t        (*validate)(ngx_uint_t status);
-    ngx_int_t        (*reg)(ngx_http_status_def_t *def);
     ngx_uint_t       (*cacheable)(ngx_uint_t status);
     const ngx_str_t *(*phrase)(ngx_uint_t status);
 
     rc = NGX_OK;
 
-    set = ngx_http_status_set;
     validate = ngx_http_status_validate;
     phrase = ngx_http_status_reason;
     cacheable = ngx_http_status_is_cacheable;
-    reg = ngx_http_status_register;
 
-    r = ngx_http_status_test_req();
+    ngx_http_status_test_assert(rc, validate(NGX_HTTP_OK) == NGX_OK,
+                                "ngx_http_status_validate() did not answer "
+                                "NGX_OK for 200 through its pointer");
+
     reason = phrase(NGX_HTTP_OK);
 
-    ngx_http_status_test_fill(&def, 205);
+    ngx_http_status_test_assert(rc, reason != NULL && reason->len != 0,
+                                "ngx_http_status_reason() did not answer the "
+                                "phrase 200 carries through its pointer");
 
-    ngx_http_status_test_assert(rc, set(r, NGX_HTTP_OK) == NGX_OK
-                                    && r->headers_out.status == NGX_HTTP_OK
-                                    && validate(NGX_HTTP_OK) == NGX_OK
-                                    && cacheable(NGX_HTTP_OK) != 0
-                                    && reason != NULL && reason->len != 0
-                                    && reg(&def) == NGX_OK,
-                                "a function published through <ngx_http.h> "
-                                "answered wrongly through its pointer");
+    ngx_http_status_test_assert(rc, cacheable(NGX_HTTP_OK) != 0,
+                                "ngx_http_status_is_cacheable() did not answer "
+                                "non-zero for 200 through its pointer");
 
     return rc;
 }
 
 
-/* the same, for the five the registry's own header publishes */
+/* and these two write: one into a request, one into the registry */
 
 static ngx_int_t
-ngx_http_status_test_helper_signatures(void)
+ngx_http_status_test_signatures_write(void)
 {
-    ngx_int_t   rc;
+    ngx_int_t              rc;
+    ngx_http_request_t    *r;
+    ngx_http_status_def_t  def;
 
-    ngx_int_t  (*init)(ngx_conf_t *cf);
-    void       (*seal)(void);
-    ngx_uint_t (*effective)(ngx_http_request_t *r);
-    ngx_uint_t (*expires)(ngx_uint_t status);
-    ngx_uint_t (*page)(ngx_uint_t status);
+    ngx_int_t  (*set)(ngx_http_request_t *r, ngx_uint_t status);
+    ngx_int_t  (*reg)(ngx_http_status_def_t *def);
 
     rc = NGX_OK;
 
-    init = ngx_http_status_init;
-    seal = ngx_http_status_seal;
-    effective = ngx_http_status_effective;
-    expires = ngx_http_status_expires_ok;
-    page = ngx_http_status_error_page_index;
+    set = ngx_http_status_set;
+    reg = ngx_http_status_register;
 
-    seal();
+    r = ngx_http_status_test_req();
 
-    ngx_http_status_test_assert(rc, init(NULL) == NGX_OK
-                                    && effective(ngx_http_status_test_req())
-                                       == 0
-                                    && expires(NGX_HTTP_OK) != 0
-                                    && page(NGX_HTTP_MOVED_PERMANENTLY) == 1,
-                                "a function the registry's own header "
-                                "publishes answered wrongly through its "
+    ngx_http_status_test_assert(rc, set(r, NGX_HTTP_OK) == NGX_OK,
+                                "ngx_http_status_set() did not answer NGX_OK "
+                                "through its pointer");
+
+    ngx_http_status_test_assert(rc, r->headers_out.status == NGX_HTTP_OK,
+                                "ngx_http_status_set() did not store 200 in "
+                                "the response through its pointer");
+
+    ngx_http_status_test_fill(&def, 205);
+
+    ngx_http_status_test_assert(rc, reg(&def) == NGX_OK,
+                                "ngx_http_status_register() did not answer "
+                                "NGX_OK for a sound definition through its "
                                 "pointer");
 
     return rc;
 }
 
 
+/* the same again, for the three of its own header that run the lifecycle */
+
+static ngx_int_t
+ngx_http_status_test_helper_signatures(void)
+{
+    ngx_int_t              rc;
+    ngx_http_status_def_t  def;
+
+    ngx_int_t  (*init)(ngx_conf_t *cf);
+    void       (*seal)(void);
+    ngx_uint_t (*effective)(ngx_http_request_t *r);
+
+    rc = NGX_OK;
+
+    init = ngx_http_status_init;
+    seal = ngx_http_status_seal;
+    effective = ngx_http_status_effective;
+
+    seal();
+
+    ngx_http_status_test_fill(&def, 205);
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_register(&def) == NGX_ERROR,
+                          "ngx_http_status_seal() did not refuse a later "
+                          "registration through its pointer");
+
+    ngx_http_status_test_assert(rc, init(NULL) == NGX_OK,
+                                "ngx_http_status_init() did not answer NGX_OK "
+                                "through its pointer");
+
+    ngx_http_status_test_assert(rc, effective(ngx_http_status_test_req()) == 0,
+                                "ngx_http_status_effective() did not answer 0 "
+                                "for a request with no status through its "
+                                "pointer");
+
+    /* sealing having run above, the registry is writable again after init */
+
+    ngx_http_status_test_assert(rc, ngx_http_status_validate(306) == NGX_ERROR,
+                                "ngx_http_status_init() did not leave the "
+                                "built-in codes alone through its pointer");
+
+    return rc;
+}
+
+
+/* and for the four of its own header that answer about a code's metadata */
+
+static ngx_int_t
+ngx_http_status_test_metadata_signatures(void)
+{
+    ngx_int_t    rc;
+    const char  *section;
+
+    ngx_uint_t  (*expires)(ngx_uint_t status);
+    ngx_uint_t  (*page)(ngx_uint_t status);
+    ngx_uint_t  (*flags)(ngx_uint_t status, ngx_uint_t flags);
+    const char *(*provenance)(ngx_uint_t status);
+
+    rc = NGX_OK;
+
+    expires = ngx_http_status_expires_ok;
+    page = ngx_http_status_error_page_index;
+    flags = ngx_http_status_has_flags;
+    provenance = ngx_http_status_rfc_section;
+
+    ngx_http_status_test_assert(rc, expires(NGX_HTTP_OK) != 0,
+                                "ngx_http_status_expires_ok() did not answer "
+                                "non-zero for 200 through its pointer");
+
+    ngx_http_status_test_assert(rc,
+                          page(NGX_HTTP_MOVED_PERMANENTLY) == 1,
+                          "ngx_http_status_error_page_index() did not answer "
+                          "the first row for 301 through its pointer");
+
+    ngx_http_status_test_assert(rc,
+                          flags(NGX_HTTP_CLOSE, NGX_HTTP_STATUS_INTERNAL)
+                          == NGX_HTTP_STATUS_INTERNAL,
+                          "ngx_http_status_has_flags() did not answer the flag "
+                          "asked about for 444 through its pointer");
+
+    section = provenance(NGX_HTTP_OK);
+
+    ngx_http_status_test_assert(rc, section != NULL && *section != '\0',
+                                "ngx_http_status_rfc_section() did not answer "
+                                "where 200 comes from through its pointer");
+
+    return rc;
+}
+
+
 /*
- * Every code the registry is expected to describe is described.  Seven of them
- * are absent from the enumeration of RFC 9110 that this work started from and
- * yet were already sent by nginx: 402, 406, 410, 411, 412, 421 and 507.  Were
- * any of those dropped, responses carrying them would fall back to three bare
- * digits and nothing would say so, which is why the whole set is asserted and
- * not a sample of it.
+ * Every code the registry is expected to describe is described.  Were one
+ * dropped, responses carrying it would fall back to three bare digits and
+ * nothing would say so, which is why the whole set is asserted and not a
+ * sample of it.
  */
 
 static ngx_int_t
@@ -792,8 +1057,6 @@ ngx_http_status_test_complete(void)
 }
 
 
-/* every answer the registry gives about a code it does not describe */
-
 static ngx_int_t
 ngx_http_status_test_no_row(ngx_uint_t *set, ngx_uint_t n)
 {
@@ -820,13 +1083,22 @@ ngx_http_status_test_no_row(ngx_uint_t *set, ngx_uint_t n)
         ngx_http_status_test_assert_code(rc,
                           ngx_http_status_expires_ok(code) == 0,
                           "is expires eligible although it must not be", code);
+
+        ngx_http_status_test_assert_code(rc,
+                          ngx_http_status_has_flags(code,
+                                  NGX_HTTP_STATUS_TEST_ALL_FLAGS) == 0,
+                          "carries a flag although the registry does not "
+                          "describe it", code);
+
+        ngx_http_status_test_assert_code(rc,
+                          ngx_http_status_rfc_section(code) == NULL,
+                          "is recorded as coming from somewhere although the "
+                          "registry does not describe it", code);
     }
 
     return rc;
 }
 
-
-/* codes the registry must not describe, inside its range and outside it */
 
 static ngx_int_t
 ngx_http_status_test_undescribed(void)
@@ -888,15 +1160,11 @@ ngx_http_status_test_reasons(void)
             continue;
         }
 
-        /* the fused form starts with the code it belongs to */
-
         ngx_http_status_test_assert_code(rc,
                           got->len > 3 && got->data[3] == ' '
                           && (ngx_uint_t) ngx_atoi(got->data, 3) == code,
                           "carries a phrase fused to another code, or one "
                           "not in the fused form at all", code);
-
-        /* the phrase is the registry's own and not the driver's copy */
 
         ngx_http_status_test_assert_code(rc,
                           got != &want->reason
@@ -1007,8 +1275,6 @@ ngx_http_status_test_divergence(void)
 }
 
 
-/* the presence test on its own, which needs no request and keeps no state */
-
 static ngx_int_t
 ngx_http_status_test_validate(void)
 {
@@ -1102,8 +1368,6 @@ ngx_http_status_test_cacheable(void)
 }
 
 
-/* the same, for the codes nginx's own "expires" processing applies to */
-
 static ngx_int_t
 ngx_http_status_test_expires(void)
 {
@@ -1149,11 +1413,7 @@ ngx_http_status_test_expires(void)
  * The two sets above are different sets and neither contains the other, which
  * is why the registry carries two flags and not one.  Testing one where the
  * other is meant would change which responses receive an "Expires" header, so
- * the difference is asserted here rather than left to be noticed: five codes
- * are eligible for expires without being cacheable, being 201, 302, 303, 304
- * and 307; seven are cacheable without being eligible, being 203, 300, 404,
- * 405, 410, 414 and 501; and twelve codes therefore answer the two questions
- * differently, while only 200, 204, 206, 301 and 308 answer both alike.
+ * the difference is asserted here rather than left to be noticed.
  */
 
 static ngx_int_t
@@ -1198,8 +1458,6 @@ ngx_http_status_test_separation(void)
 }
 
 
-/* and how many codes of the range answer the two questions differently */
-
 static ngx_int_t
 ngx_http_status_test_difference(void)
 {
@@ -1238,11 +1496,222 @@ ngx_http_status_test_difference(void)
 
 
 /*
+ * Every flag of every code of the range, one flag at a time, so that a failure
+ * names the flag as well as the code.  The registry answers about a flag
+ * through a query of its own, and that query is what makes this observable:
+ * were the informational flag dropped from 100, or the internal flag from 444,
+ * nothing else the registry answers would change and every check that follows
+ * from a flag rather than from the flag itself would hold just the same.
+ */
+
+static ngx_int_t
+ngx_http_status_test_flag_sets(void)
+{
+    ngx_int_t                     rc;
+    ngx_uint_t                    code, i, n;
+    ngx_http_status_test_flag_t  *f;
+
+    rc = NGX_OK;
+    n = ngx_http_status_test_nelts(ngx_http_status_test_flags);
+
+    for (i = 0; i < n; i++) {
+        f = &ngx_http_status_test_flags[i];
+
+        for (code = NGX_HTTP_STATUS_MIN; code < NGX_HTTP_STATUS_MAX; code++) {
+
+            ngx_http_status_test_assert_code(rc,
+                          (ngx_http_status_has_flags(code, f->flag) ? 1 : 0)
+                          == ngx_http_status_test_member(code, f->set, f->n),
+                          f->what, code);
+        }
+    }
+
+    return rc;
+}
+
+
+/*
+ * And the whole flag word of every code at once, which is what catches a flag
+ * carried by the wrong row as well as one the driver does not name at all.  A
+ * flag the registry gains must be named here, and until it is this says so.
+ */
+
+static ngx_int_t
+ngx_http_status_test_flag_words(void)
+{
+    ngx_int_t   rc;
+    ngx_uint_t  code, i, n, unknown;
+
+    rc = NGX_OK;
+    unknown = ~((ngx_uint_t) NGX_HTTP_STATUS_TEST_ALL_FLAGS);
+
+    for (code = NGX_HTTP_STATUS_MIN; code < NGX_HTTP_STATUS_MAX; code++) {
+
+        ngx_http_status_test_assert_code(rc,
+                          ngx_http_status_has_flags(code,
+                                  NGX_HTTP_STATUS_TEST_ALL_FLAGS)
+                          == ngx_http_status_test_want_flags(code),
+                          "does not carry exactly the flags expected of it",
+                          code);
+
+        ngx_http_status_test_assert_code(rc,
+                          ngx_http_status_has_flags(code, unknown) == 0,
+                          "carries a flag the driver does not name, so one has "
+                          "been added to the registry", code);
+    }
+
+    /* a code outside the range the registry covers carries none of them */
+
+    n = ngx_http_status_test_nelts(ngx_http_status_test_outside);
+
+    for (i = 0; i < n; i++) {
+        code = ngx_http_status_test_outside[i];
+
+        ngx_http_status_test_assert_code(rc,
+                          ngx_http_status_has_flags(code,
+                                  NGX_HTTP_STATUS_TEST_ALL_FLAGS) == 0,
+                          "carries a flag although it lies outside the range "
+                          "the registry covers", code);
+    }
+
+    return rc;
+}
+
+
+/*
+ * Where the registry records that a code comes from.  Every code it describes
+ * is recorded and no code it does not is, which is the distinction a phrase
+ * draws as well; nginx's own codes are recorded as internal to nginx rather
+ * than against a specification that does not define them, and every other code
+ * names the specification it comes from.
+ */
+
+static ngx_int_t
+ngx_http_status_test_sections(void)
+{
+    ngx_int_t    rc;
+    ngx_uint_t   code;
+    const char  *got;
+
+    rc = NGX_OK;
+
+    for (code = NGX_HTTP_STATUS_MIN; code < NGX_HTTP_STATUS_MAX; code++) {
+
+        got = ngx_http_status_rfc_section(code);
+
+        if (ngx_http_status_validate(code) != NGX_OK) {
+
+            ngx_http_status_test_assert_code(rc, got == NULL,
+                          "is recorded as coming from somewhere although the "
+                          "registry does not describe it", code);
+            continue;
+        }
+
+        ngx_http_status_test_assert_code(rc, got != NULL && *got != '\0',
+                          "is described and yet is recorded as coming from "
+                          "nowhere", code);
+
+        if (got == NULL) {
+            continue;
+        }
+
+        if (ngx_http_status_has_flags(code, NGX_HTTP_STATUS_INTERNAL)) {
+
+            ngx_http_status_test_assert_code(rc,
+                          ngx_strcmp(got, "nginx internal") == 0,
+                          "is one of nginx's own codes and so must be recorded "
+                          "as internal to nginx", code);
+            continue;
+        }
+
+        ngx_http_status_test_assert_code(rc,
+                          ngx_strncmp(got, "RFC ", 4) == 0,
+                          "does not name the specification it comes from",
+                          code);
+    }
+
+    return rc;
+}
+
+
+/* the reference itself, for a code out of each specification cited */
+
+static ngx_int_t
+ngx_http_status_test_provenance(void)
+{
+    ngx_int_t                        rc;
+    ngx_uint_t                       code, i, n;
+    const char                      *got;
+    ngx_http_status_test_section_t  *want;
+
+    rc = NGX_OK;
+    n = ngx_http_status_test_nelts(ngx_http_status_test_provenances);
+
+    for (i = 0; i < n; i++) {
+        want = &ngx_http_status_test_provenances[i];
+        code = want->code;
+
+        got = ngx_http_status_rfc_section(code);
+
+        ngx_http_status_test_assert_code(rc,
+                          got != NULL && ngx_strcmp(got, want->section) == 0,
+                          "is not recorded as coming from where it does come "
+                          "from", code);
+    }
+
+    return rc;
+}
+
+
+/*
+ * The eight codes whose phrase differs from the name RFC 9110 recommends
+ * record that name beside their section, in parentheses.  That is what lets
+ * the phrase keep the bytes nginx has always sent while the registry is still
+ * correct by that specification, so the name is read back here and compared
+ * with the one the divergence table names.
+ */
+
+static ngx_int_t
+ngx_http_status_test_divergent_sections(void)
+{
+    ngx_int_t    rc;
+    ngx_uint_t   code, i, n;
+    ngx_str_t   *name;
+    const char  *got, *p;
+
+    rc = NGX_OK;
+    n = ngx_http_status_test_nelts(ngx_http_status_test_divergent);
+
+    for (i = 0; i < n; i++) {
+        code = ngx_http_status_test_divergent[i].code;
+        name = &ngx_http_status_test_divergent[i].rfc;
+
+        got = ngx_http_status_rfc_section(code);
+        p = (got == NULL) ? NULL : ngx_strchr(got, '(');
+
+        /* the name follows the code and a space in the divergence table */
+
+        ngx_http_status_test_assert_code(rc,
+                          p != NULL
+                          && ngx_strlen(p + 1) == name->len - 3
+                          && ngx_strncmp(p + 1, name->data + 4,
+                                         name->len - 4) == 0
+                          && p[name->len - 3] == ')',
+                          "sends a phrase that differs from the name RFC 9110 "
+                          "recommends without recording that name", code);
+    }
+
+    return rc;
+}
+
+
+/*
  * nginx's own codes are described by the registry as first class members of
  * it, so that a build which reports a status the registry does not describe
  * says nothing about them: they are load bearing signals and not violations of
- * any specification.  The flags a row carries are not published, by design, so
- * what is asserted here is what follows from them.
+ * any specification.  The flags each carries are asserted as well as what
+ * follows from them, so that a build which stopped flagging one of them as
+ * internal is caught here rather than passing because nothing else changed.
  */
 
 static ngx_int_t
@@ -1278,13 +1747,57 @@ ngx_http_status_test_internal(void)
                           "is one of nginx's own codes and so must be "
                           "neither cacheable nor expires eligible", code);
 
-        /* setting one is accepted, and reported by no build */
-
         ngx_http_status_test_assert_code(rc,
                           ngx_http_status_set(r, code) == NGX_OK
                           && ngx_http_status_test_alerts == 0,
                           "is one of nginx's own codes and so must be set "
                           "without complaint", code);
+    }
+
+    return rc;
+}
+
+
+/*
+ * And the flags each of them carries, which is what says the registry holds
+ * them as members of it and not merely as codes it happens to describe: each is
+ * flagged as one of nginx's own and as a client error, both bits and not one of
+ * them, so that the registry places them in the 4xx class they are numbered in
+ * while marking them as having no standing outside nginx.  Neither bit follows
+ * from anything else the registry answers, which is why each is read back.
+ */
+
+static ngx_int_t
+ngx_http_status_test_internal_flags(void)
+{
+    ngx_int_t    rc;
+    ngx_uint_t   code, i, n, want;
+    const char  *section;
+
+    rc = NGX_OK;
+    n = ngx_http_status_test_nelts(ngx_http_status_test_internal_set);
+    want = NGX_HTTP_STATUS_INTERNAL|NGX_HTTP_STATUS_CLIENT_ERROR;
+
+    for (i = 0; i < n; i++) {
+        code = ngx_http_status_test_internal_set[i];
+        section = ngx_http_status_rfc_section(code);
+
+        ngx_http_status_test_assert_code(rc,
+                          ngx_http_status_has_flags(code, want) == want,
+                          "is one of nginx's own codes and so must be flagged "
+                          "both internal and a client error", code);
+
+        ngx_http_status_test_assert_code(rc,
+                          ngx_http_status_has_flags(code,
+                                  NGX_HTTP_STATUS_TEST_ALL_FLAGS) == want,
+                          "is one of nginx's own codes and so must carry no "
+                          "flag besides those two", code);
+
+        ngx_http_status_test_assert_code(rc,
+                          section != NULL
+                          && ngx_strcmp(section, "nginx internal") == 0,
+                          "is one of nginx's own codes and so must be recorded "
+                          "as internal to nginx", code);
     }
 
     return rc;
@@ -1312,8 +1825,6 @@ ngx_http_status_test_register(void)
                           ngx_http_status_register(NULL) == NGX_ERROR,
                           "a null definition was registered");
 
-    /* a code the registry does not describe is accepted before sealing */
-
     ngx_http_status_test_fill(&def, 205);
 
     ngx_http_status_test_assert(rc,
@@ -1321,8 +1832,6 @@ ngx_http_status_test_register(void)
                           && ngx_http_status_validate(205) == NGX_OK
                           && ngx_http_status_reason(205) != NULL,
                           "a sound definition was refused before sealing");
-
-    /* a code already described is refused, whoever described it */
 
     ngx_http_status_test_fill(&def, 205);
 
@@ -1335,8 +1844,6 @@ ngx_http_status_test_register(void)
 }
 
 
-/* the two reasons a definition is refused that every code can be asked of */
-
 static ngx_int_t
 ngx_http_status_test_register_refuses(void)
 {
@@ -1345,8 +1852,6 @@ ngx_http_status_test_register_refuses(void)
     ngx_http_status_def_t  def;
 
     rc = NGX_OK;
-
-    /* a code the registry already describes is refused */
 
     n = ngx_http_status_test_nelts(ngx_http_status_test_codes);
 
@@ -1360,8 +1865,6 @@ ngx_http_status_test_register_refuses(void)
                           "was registered again although the registry "
                           "already describes it", code);
     }
-
-    /* a code outside the range the registry covers is refused */
 
     n = ngx_http_status_test_nelts(ngx_http_status_test_outside);
 
@@ -1414,8 +1917,6 @@ ngx_http_status_test_sealed(void)
                           && ngx_http_status_validate(306) == NGX_ERROR,
                           "a definition was registered after sealing");
 
-    /* sealing twice is not a way through it */
-
     ngx_http_status_seal();
 
     ngx_http_status_test_fill(&def, 407);
@@ -1424,8 +1925,6 @@ ngx_http_status_test_sealed(void)
                           ngx_http_status_register(&def) == NGX_ERROR
                           && ngx_http_status_register(NULL) == NGX_ERROR,
                           "a definition was registered after sealing twice");
-
-    /* what was registered before sealing is still described */
 
     ngx_http_status_test_assert(rc,
                           ngx_http_status_validate(305) == NGX_OK,
@@ -1461,8 +1960,6 @@ ngx_http_status_test_copied(void)
                           ngx_http_status_register(&def) == NGX_OK,
                           "a sound definition was refused before sealing");
 
-    /* the caller's definition is now worthless, and the registry's is not */
-
     def.code = 599;
     def.reason.len = 0;
     def.flags = 0;
@@ -1484,6 +1981,64 @@ ngx_http_status_test_copied(void)
                           && ngx_http_status_validate(599) == NGX_ERROR,
                           "altering the caller's definition altered the "
                           "registry");
+
+    return rc;
+}
+
+
+/*
+ * Every member of a definition is copied, and not only the two another answer
+ * follows from.  The flags are read back as a word, so that a member copied as
+ * zero is caught, and where the code is recorded as coming from is read back as
+ * the string it was registered as although the caller's pointer has since been
+ * set to null, which is what proves that member was copied as well rather than
+ * merely pointed at.
+ */
+
+static ngx_int_t
+ngx_http_status_test_copied_metadata(void)
+{
+    ngx_int_t               rc;
+    ngx_uint_t              want;
+    const char             *section;
+    ngx_http_status_def_t   def;
+
+    rc = NGX_OK;
+    want = NGX_HTTP_STATUS_CACHEABLE|NGX_HTTP_STATUS_EXPIRES_OK;
+
+    def.code = 205;
+    def.reason.len = sizeof("205 Reset Content") - 1;
+    def.reason.data = (u_char *) "205 Reset Content";
+    def.flags = want;
+    def.rfc_section = "RFC 9110 section 15.3.6";
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_register(&def) == NGX_OK,
+                          "a sound definition was refused before sealing");
+
+    def.flags = 0;
+    def.rfc_section = NULL;
+
+    section = ngx_http_status_rfc_section(205);
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_has_flags(205,
+                                  NGX_HTTP_STATUS_TEST_ALL_FLAGS) == want,
+                          "the registry did not copy the flags of the "
+                          "definition it was given");
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_is_cacheable(205) != 0
+                          && ngx_http_status_expires_ok(205) != 0,
+                          "the flags of a definition were copied and yet are "
+                          "not what the registry answers from");
+
+    ngx_http_status_test_assert(rc,
+                          section != NULL
+                          && ngx_strcmp(section,
+                                        "RFC 9110 section 15.3.6") == 0,
+                          "the registry did not copy where the definition it "
+                          "was given records the code as coming from");
 
     return rc;
 }
@@ -1549,13 +2104,112 @@ ngx_http_status_test_exhaustion(void)
 
 
 /*
+ * One built-in row in full: the code is described, it carries the phrase it
+ * has always carried or none where nginx sends three digits and a space, it
+ * carries exactly the flags expected of it, and it is recorded as coming from
+ * somewhere.  This is what a count of the codes described cannot say, and it is
+ * what every initialization is checked against.
+ */
+
+static ngx_int_t
+ngx_http_status_test_builtin(ngx_uint_t code)
+{
+    ngx_int_t         rc;
+    ngx_str_t        *want;
+    const char       *section;
+    const ngx_str_t  *got;
+
+    rc = NGX_OK;
+
+    got = ngx_http_status_reason(code);
+    want = ngx_http_status_test_phrase(code);
+    section = ngx_http_status_rfc_section(code);
+
+    ngx_http_status_test_assert_code(rc,
+                      ngx_http_status_validate(code) == NGX_OK,
+                      "is a built-in code and yet is not described", code);
+
+    if (want == NULL) {
+        ngx_http_status_test_assert_code(rc, got != NULL && got->len == 0,
+                          "carries a phrase where nginx sends three digits "
+                          "and a space", code);
+
+    } else {
+        ngx_http_status_test_assert_code(rc,
+                          got != NULL && got->len == want->len
+                          && ngx_memcmp(got->data, want->data,
+                                        want->len) == 0,
+                          "does not carry the phrase nginx has always sent "
+                          "for it", code);
+    }
+
+    ngx_http_status_test_assert_code(rc,
+                      ngx_http_status_has_flags(code,
+                              NGX_HTTP_STATUS_TEST_ALL_FLAGS)
+                      == ngx_http_status_test_want_flags(code),
+                      "does not carry exactly the flags expected of it", code);
+
+    ngx_http_status_test_assert_code(rc,
+                      section != NULL && *section != '\0',
+                      "is described and yet is recorded as coming from "
+                      "nowhere", code);
+
+    return rc;
+}
+
+
+/*
+ * And every built-in row together, with nothing else described beside them.
+ * The count is asserted over the whole range, so a count of exactly the
+ * built-in number taken together with every built-in code being described
+ * leaves no room for a code the driver does not name to be described as well.
+ */
+
+static ngx_int_t
+ngx_http_status_test_builtins(void)
+{
+    ngx_int_t   rc;
+    ngx_uint_t  i, n;
+
+    rc = NGX_OK;
+    n = ngx_http_status_test_nelts(ngx_http_status_test_codes);
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_test_described()
+                          == NGX_HTTP_STATUS_TEST_NBUILTIN,
+                          "the registry does not describe exactly as many "
+                          "codes as it has built-in rows");
+
+    for (i = 0; i < n; i++) {
+
+        if (ngx_http_status_test_builtin(ngx_http_status_test_codes[i])
+            != NGX_OK)
+        {
+            rc = NGX_ERROR;
+        }
+    }
+
+    /* and what a module registered for an earlier configuration is gone */
+
+    if (ngx_http_status_test_no_row(ngx_http_status_test_absent,
+            ngx_http_status_test_nelts(ngx_http_status_test_absent))
+        != NGX_OK)
+    {
+        rc = NGX_ERROR;
+    }
+
+    return rc;
+}
+
+
+/*
  * Initialization runs again for every configuration that is parsed, which is
  * on every reload and on every configuration test, so it must leave the same
  * registry every time: unsealed, describing every built-in code and no other,
  * with whatever a module registered for the configuration before discarded.
  * The cycle is run more than once because a second run of it is the case a
- * reload is, and the state after each is compared with the state after the
- * first rather than merely inspected.
+ * reload is, and the state after each is compared in full with the state
+ * initialization is expected to leave rather than counted and let be.
  */
 
 static ngx_int_t
@@ -1569,15 +2223,15 @@ ngx_http_status_test_cycle(void)
     ngx_http_status_test_assert(rc, ngx_http_status_init(NULL) == NGX_OK,
                                 "the registry failed to initialize again");
 
-    ngx_http_status_test_assert(rc,
-                          ngx_http_status_test_described()
-                          == NGX_HTTP_STATUS_TEST_NBUILTIN
-                          && ngx_http_status_validate(205) == NGX_ERROR
-                          && ngx_http_status_validate(305) == NGX_ERROR,
-                          "initialization did not describe exactly the "
-                          "built-in codes, or kept an earlier registration");
+    if (ngx_http_status_test_builtins() != NGX_OK) {
+        rc = NGX_ERROR;
+    }
 
-    /* the registry is unsealed again, so a module may register */
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_validate(205) == NGX_ERROR
+                          && ngx_http_status_validate(305) == NGX_ERROR,
+                          "initialization kept a registration made for the "
+                          "configuration before it");
 
     ngx_http_status_test_fill(&def, 205);
 
@@ -1617,11 +2271,16 @@ ngx_http_status_test_idempotent(void)
 
     /* and one initialization more leaves the built-in codes alone again */
 
+    ngx_http_status_test_assert(rc, ngx_http_status_init(NULL) == NGX_OK,
+                                "the registry failed to initialize a last "
+                                "time");
+
+    if (ngx_http_status_test_builtins() != NGX_OK) {
+        rc = NGX_ERROR;
+    }
+
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_init(NULL) == NGX_OK
-                          && ngx_http_status_test_described()
-                             == NGX_HTTP_STATUS_TEST_NBUILTIN
-                          && ngx_http_status_validate(205) == NGX_ERROR
+                          ngx_http_status_validate(205) == NGX_ERROR
                           && ngx_http_status_validate(305) == NGX_ERROR,
                           "the registry did not return to its built-in state");
 
@@ -1631,8 +2290,9 @@ ngx_http_status_test_idempotent(void)
 
 /*
  * The two range macros.  Each is a parameterized macro and not a function,
- * because the sources are ANSI C, and each expands its argument more than
- * once, so a variable is passed and never an expression with a side effect.
+ * because the sources are ANSI C.  The range test expands its argument more
+ * than once, so a variable is passed to it and never an expression with a side
+ * effect; the width test expands its argument once.
  */
 
 static ngx_int_t
@@ -1685,17 +2345,15 @@ ngx_http_status_test_ranges(void)
 /*
  * The status a request is reported as having, which the access log and the
  * "status" variable both read.  An error status wins over a response status,
- * because it is chosen once the response has been replaced by an error, and a
- * request answered before any status was chosen is reported as 9 when it spoke
- * HTTP/0.9 and as 0 otherwise.
+ * and a request answered before any status was chosen is reported as 9 when it
+ * spoke HTTP/0.9 and as 0 otherwise.
  *
- * That 9 is worth a word.  The constant naming HTTP/0.9 is itself 9, so the
- * version and the value reported for it coincide by accident, and a version
- * returned in place of a status would pass unnoticed for that one case.  So
- * HTTP/1.0, whose constant is 1000, is asked about as well: a request that
- * spoke it and was answered before a status was chosen is reported as 0, which
- * a version returned in place of a status could not manage.  The three digit
- * formatting that turns 9 into "009" belongs to the callers, not here.
+ * The constant naming HTTP/0.9 is itself 9, so a version returned in place of
+ * a status would pass unnoticed for that one case.  HTTP/1.0, whose constant
+ * is 1000, is asked about as well: a request that spoke it and was answered
+ * before a status was chosen is reported as 0, which a version returned in
+ * place of a status could not manage.  The three-digit formatting that turns 9
+ * into "009" belongs to the callers.
  */
 
 static ngx_int_t
@@ -1729,8 +2387,6 @@ ngx_http_status_test_effective(void)
     return rc;
 }
 
-
-/* and the order in which the three members it reads win over one another */
 
 static ngx_int_t
 ngx_http_status_test_precedence(void)
@@ -1790,8 +2446,9 @@ ngx_http_status_test_precedence(void)
  * A status too wide for the three bytes an HTTP/2 or an HTTP/3 response
  * reserves cannot be sent at all, so it is refused in every build and reported
  * as an alert.  A status the registry does not describe is by contrast
- * perfectly sendable and is refused by no build, which is what keeps a
- * response the same whether or not the build was configured to look for one.
+ * perfectly sendable, and only the build configured to look for one refuses it;
+ * both of those bounds belong to the group that follows this one, which asserts
+ * each of them against the build it is compiled into.
  */
 
 static ngx_int_t
@@ -1818,8 +2475,6 @@ ngx_http_status_test_set(void)
                           "setting a status wrote more than the response "
                           "status and the bit recording it");
 
-    /* a status is set again once the response has been decided */
-
     ngx_http_status_test_assert(rc,
                           ngx_http_status_set(r,
                               NGX_HTTP_CLIENT_CLOSED_REQUEST) == NGX_OK
@@ -1838,9 +2493,15 @@ ngx_http_status_test_set(void)
  * wide for the three bytes an HTTP/2 or an HTTP/3 response reserves for it
  * cannot be sent at all, because the width in a three digit conversion is a
  * minimum and never a limit, so it is refused in every build and reported as
- * an alert.  A status the registry merely does not describe is by contrast
- * perfectly sendable, and is refused by no build: were it refused, a response
- * would depend on a build option, which is the one thing this must not do.
+ * an alert.
+ *
+ * A status the registry merely does not describe is by contrast perfectly
+ * sendable, and the build without the switch sends it: what a response carries
+ * there is what it carried before the registry existed, which is the one thing
+ * that build must not do differently.  The build with the switch is the build
+ * that refuses it, that being what asking for the switch asks for, and the
+ * difference between the two is asserted here against each of them rather than
+ * left to be found out.
  */
 
 static ngx_int_t
@@ -1853,16 +2514,31 @@ ngx_http_status_test_set_bounds(void)
 
     r = ngx_http_status_test_req();
 
+#if (NGX_HTTP_STATUS_VALIDATION)
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_set(r, NGX_HTTP_STATUS_WIRE_MAX - 1)
+                          == NGX_ERROR
+                          && r->headers_out.status == 0
+                          && r->status_final == 0
+                          && ngx_http_status_test_alerts == 1,
+                          "a status the registry does not describe was "
+                          "accepted, stored, or not reported exactly once by "
+                          "the build configured to refuse it");
+
+#else
+
     ngx_http_status_test_assert(rc,
                           ngx_http_status_set(r, NGX_HTTP_STATUS_WIRE_MAX - 1)
                           == NGX_OK
                           && r->headers_out.status
                              == NGX_HTTP_STATUS_WIRE_MAX - 1
-                          && r->status_final == 1,
+                          && r->status_final == 1
+                          && ngx_http_status_test_alerts == 0,
                           "a sendable status the registry does not describe "
-                          "was refused, so a response depends on a build");
+                          "was refused by the build that must send it");
 
-    /* a status too wide to be sent is refused, and stored all the same */
+#endif
 
     r = ngx_http_status_test_req();
 
@@ -1915,8 +2591,6 @@ ngx_http_status_test_promote(void)
                           "promoting an error status over a response status "
                           "did not make the stores the setter makes");
 
-    /* promotion examines nothing, so it reports nothing either */
-
     r = ngx_http_status_test_req();
 
     ngx_http_status_promote(r, NGX_HTTP_STATUS_WIRE_MAX);
@@ -1932,12 +2606,19 @@ ngx_http_status_test_promote(void)
 
 
 /*
- * Whether a status is the one an upstream chose for the response being
- * relayed.  Such a status is exempt from being examined, because an upstream
- * may answer with a code nginx has never heard of, or with one below 100, and
- * nginx's part is to relay what it received.  The test is on the status and not
- * on the request alone: a request that has an upstream also carries statuses
- * that nginx or a configuration chose for it, and those are not exempt.
+ * Whether the status a request is presenting to nginx's own status machinery is
+ * the one an upstream chose for the response being relayed.  Such a status is
+ * exempt from being examined, because an upstream may answer with a code nginx
+ * has never heard of, or with one below 100, and nginx's part is to relay what
+ * it received.
+ *
+ * The answer is the authorship recorded on the request by the two places that
+ * carry an upstream's status across into nginx's own structures, and never the
+ * status having some particular value: two authors may choose the same number
+ * for one request, so equal numbers would not prove equal authorship.  A
+ * request that has an upstream is therefore not exempt as such, and a status
+ * nginx chooses for such a request is not exempt even where it is the number
+ * the upstream chose.
  */
 
 static ngx_int_t
@@ -1951,44 +2632,56 @@ ngx_http_status_test_relayed(void)
     r = ngx_http_status_test_req();
 
     ngx_http_status_test_assert(rc,
-                          !ngx_http_status_relayed(r, NGX_HTTP_OK),
-                          "a request with no upstream at all was taken to be "
+                          !ngx_http_status_relayed(r),
+                          "a request that has relayed nothing was taken to be "
                           "relaying a status");
+
+    /* an upstream of its own says nothing of who chose a status */
 
     r->upstream = &ngx_http_status_test_u;
     r->upstream->headers_in.status_n = 599;
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_relayed(r, 599),
-                          "the status an upstream chose was not taken to be "
-                          "the one being relayed");
+                          !ngx_http_status_relayed(r),
+                          "a request was taken to be relaying a status because "
+                          "it has an upstream, which is not what an upstream "
+                          "having answered means");
+
+    /* the crossings of that boundary record it, whatever the code */
+
+    r->status_upstream = 1;
 
     ngx_http_status_test_assert(rc,
-                          !ngx_http_status_relayed(r, NGX_HTTP_BAD_GATEWAY)
-                          && !ngx_http_status_relayed(r, 598),
-                          "a status nginx chose for a request that has an "
-                          "upstream was taken to be relayed");
-
-    /* an upstream may answer below the range the registry covers */
+                          ngx_http_status_relayed(r),
+                          "the status an upstream chose was not taken to be "
+                          "the one being relayed");
 
     r->upstream->headers_in.status_n = 42;
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_relayed(r, 42)
+                          ngx_http_status_relayed(r)
                           && ngx_http_status_validate(42) == NGX_ERROR,
-                          "a status an upstream chose below 100 was not taken "
-                          "to be relayed");
+                          "a status an upstream chose below the range the "
+                          "registry covers was not taken to be relayed");
+
+    /*
+     * And nginx choosing a status for that same request ends the exemption,
+     * even where it chooses the number the upstream chose: the setter is nginx
+     * choosing, so it clears what the crossing recorded.
+     */
+
+    r->upstream->headers_in.status_n = NGX_HTTP_BAD_GATEWAY;
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_set(r, NGX_HTTP_BAD_GATEWAY) == NGX_OK
+                          && !ngx_http_status_relayed(r),
+                          "a status nginx chose for a request that had relayed "
+                          "one was taken to be relayed as well, on being the "
+                          "number the upstream chose");
 
     return rc;
 }
 
-
-/*
- * The row of the error page table a status selects, which is status code
- * knowledge and so belongs to the registry rather than to the table's file.
- * Every row is accounted for once, and no status of any value selects a row
- * outside the table, which is what the row count is asserted against.
- */
 
 static ngx_int_t
 ngx_http_status_test_error_pages(void)
@@ -2010,8 +2703,6 @@ ngx_http_status_test_error_pages(void)
                           "that it did before the registry owned that "
                           "mapping", want->code);
     }
-
-    /* no status of any value reaches past the end of that table */
 
     bad = 0;
     found = 0;
@@ -2040,22 +2731,15 @@ ngx_http_status_test_error_pages(void)
 /*
  * Reporting exists only in a build configured with
  * --with-http_status_validation, so these checks are compiled into that build
- * alone.  A bare #if is what selects them, and not #ifdef: the macro is either
- * defined as 1 by auto/have or not defined at all, and an undefined macro is
- * zero in an #if.
- *
- * Of the two ways the reporting path could be covered, this is the first: a
- * real connection and a real log are wired to the request, and the log is given
- * a writer, which is the hook nginx's own logging offers, so that the alerts a
- * check produced are counted rather than inferred.  The path therefore runs in
- * full here rather than being reasoned about, and each of these checks emits
- * one alert as well, which is the reporting working and not a failure.
+ * alone.  A real connection and a real log are wired to the request and the
+ * log is given a writer, which is the hook nginx's own logging offers, so that
+ * the alerts a check produced are counted rather than inferred: each of these
+ * checks emits one alert, which is the reporting working and not a failure.
  *
  * What is asserted is the policy: a status the registry describes is not
  * reported, one it does not describe is, the status an upstream chose is
  * exempt, and a request is reported for at most once however many statuses are
- * chosen for it, which is what makes the number of these lines the number of
- * requests rather than the number of stores.
+ * chosen for it.
  */
 
 static ngx_int_t
@@ -2084,8 +2768,6 @@ ngx_http_status_test_report(void)
                                 "a status the registry does not describe was "
                                 "not reported exactly once");
 
-    /* and the same request is not reported for again */
-
     ngx_http_status_report(r, 305);
 
     ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 1,
@@ -2097,7 +2779,13 @@ ngx_http_status_test_report(void)
 }
 
 
-/* and the status an upstream chose, which is exempt from being reported */
+/*
+ * And the status an upstream chose, which is exempt.  The exemption belongs to
+ * the gate that can be handed such a status rather than to the reporting
+ * itself, and it is read from the authorship recorded on the request, so what
+ * is asserted here is the sequence that gate performs: report unless the
+ * request is relaying, then clear the record just read.
+ */
 
 static ngx_int_t
 ngx_http_status_test_report_exempts(void)
@@ -2110,30 +2798,62 @@ ngx_http_status_test_report_exempts(void)
     r = ngx_http_status_test_req();
     r->upstream = &ngx_http_status_test_u;
     r->upstream->headers_in.status_n = 599;
+    r->status_upstream = 1;
 
-    ngx_http_status_report(r, 599);
+    if (!ngx_http_status_relayed(r)) {
+        ngx_http_status_report(r, 599);
+    }
 
     ngx_http_status_test_assert(rc, r->status_reported == 0
                                     && ngx_http_status_test_alerts == 0,
                                 "the status an upstream chose was reported, "
                                 "which relaying a response must not be");
 
-    /* including one below the range the registry covers */
+    /*
+     * The record the gate read is cleared there, so that a status the
+     * configuration chooses for the same request afterwards is reported even
+     * where it is the number the upstream chose: an "error_page 599 =599 /uri"
+     * against an upstream answering 599 leaves nginx relaying one 599 and the
+     * configuration choosing another, and only the first of them is exempt.
+     */
+
+    r->status_upstream = 0;
+
+    if (!ngx_http_status_relayed(r)) {
+        ngx_http_status_report(r, 599);
+    }
+
+    ngx_http_status_test_assert(rc, r->status_reported == 1
+                                    && ngx_http_status_test_alerts == 1,
+                                "a status the configuration chose was taken to "
+                                "be relayed because an upstream had chosen the "
+                                "same number for the same request");
+
+    /* a status below the range the registry covers is relayed as it stands */
 
     r = ngx_http_status_test_req();
     r->upstream = &ngx_http_status_test_u;
     r->upstream->headers_in.status_n = 42;
+    r->status_upstream = 1;
 
-    ngx_http_status_report(r, 42);
+    if (!ngx_http_status_relayed(r)) {
+        ngx_http_status_report(r, 42);
+    }
 
     ngx_http_status_test_assert(rc, r->status_reported == 0
                                     && ngx_http_status_test_alerts == 0,
                                 "a status an upstream chose below 100 was "
                                 "reported");
 
-    /* a status nginx chose for that same request is not exempt */
+    /* and a status nginx chose for a request with an upstream is not exempt */
 
-    ngx_http_status_report(r, 306);
+    r = ngx_http_status_test_req();
+    r->upstream = &ngx_http_status_test_u;
+    r->upstream->headers_in.status_n = 42;
+
+    if (!ngx_http_status_relayed(r)) {
+        ngx_http_status_report(r, 306);
+    }
 
     ngx_http_status_test_assert(rc, r->status_reported == 1
                                     && ngx_http_status_test_alerts == 1,
@@ -2145,9 +2865,12 @@ ngx_http_status_test_report_exempts(void)
 
 
 /*
- * The setter reports through that same policy, and reports rather than
- * refusing: the response carries the status that was chosen for it, so that it
- * is the response a build without the switch would send.
+ * The setter reports through that same policy and then refuses, it being the
+ * one of the three points where a status is chosen that has a caller with a
+ * result to act on: the caller's own error handling runs, answering the request
+ * as it answers any other failure, and the status the request already carried
+ * is left as it was rather than replaced by one this build was configured to
+ * object to.
  */
 
 static ngx_int_t
@@ -2161,12 +2884,26 @@ ngx_http_status_test_set_reports(void)
     r = ngx_http_status_test_req();
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, 306) == NGX_OK
-                          && r->headers_out.status == 306
+                          ngx_http_status_set(r, 306) == NGX_ERROR
                           && r->status_reported == 1
                           && ngx_http_status_test_alerts == 1,
-                          "setting a status the registry does not describe "
-                          "was refused, or was not reported exactly once");
+                          "setting a status the registry does not describe was "
+                          "accepted, or was not reported exactly once");
+
+    ngx_http_status_test_assert(rc,
+                          r->headers_out.status == 0
+                          && r->status_final == 0,
+                          "a status that was refused was stored all the same, "
+                          "so the response would carry one this build objects "
+                          "to");
+
+    /* refusing does not depend on the report having been made */
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_set(r, 305) == NGX_ERROR
+                          && ngx_http_status_test_alerts == 1,
+                          "a second such status was accepted, or a request was "
+                          "reported for more than once");
 
     r = ngx_http_status_test_req();
 
@@ -2195,6 +2932,143 @@ ngx_http_status_test_set_reports(void)
     return rc;
 }
 
+
+/*
+ * The setter and the record of who chose a status composed, which is the pair a
+ * request being relayed presents and so is the path the product takes.  Each is
+ * asked of on its own above; what is asked here is that the setter does not
+ * read that record.  Relaying is done by storing a status directly and never
+ * through the setter, so every status the setter is handed was chosen by nginx
+ * or by a configuration, and a request that is relaying one is not thereby
+ * allowed to be given an undescribed status of its own.  Storing a status is
+ * nginx choosing it, so the setter clears the record as it stores.
+ */
+
+static ngx_int_t
+ngx_http_status_test_set_relayed(void)
+{
+    ngx_int_t            rc;
+    ngx_http_request_t  *r;
+
+    rc = NGX_OK;
+
+    /* the request is relaying a status, recorded as the crossings record it */
+
+    r = ngx_http_status_test_req();
+    r->upstream = &ngx_http_status_test_u;
+    r->upstream->headers_in.status_n = 599;
+    r->status_upstream = 1;
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_set(r, 599) == NGX_ERROR
+                          && r->headers_out.status == 0
+                          && r->status_final == 0
+                          && r->status_reported == 1
+                          && ngx_http_status_test_alerts == 1,
+                          "the setter accepted a status the registry does not "
+                          "describe because the request was relaying one");
+
+    /* including one below the range the registry describes at all */
+
+    r = ngx_http_status_test_req();
+    r->upstream = &ngx_http_status_test_u;
+    r->upstream->headers_in.status_n = 42;
+    r->status_upstream = 1;
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_set(r, 42) == NGX_ERROR
+                          && r->headers_out.status == 0
+                          && r->status_reported == 1
+                          && ngx_http_status_test_alerts == 1,
+                          "the setter accepted a status below 100 because the "
+                          "request was relaying one");
+
+    /* and a status it does store leaves nginx as the chooser of record */
+
+    r = ngx_http_status_test_req();
+    r->upstream = &ngx_http_status_test_u;
+    r->upstream->headers_in.status_n = 599;
+    r->status_upstream = 1;
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_set(r, NGX_HTTP_NOT_FOUND) == NGX_OK
+                          && r->headers_out.status == NGX_HTTP_NOT_FOUND
+                          && r->status_final == 1
+                          && !ngx_http_status_relayed(r)
+                          && ngx_http_status_test_alerts == 0,
+                          "the setter left the request recorded as relaying a "
+                          "status after nginx had chosen the one it carries");
+
+    return rc;
+}
+
+
+/*
+ * The gate and the setter composed on one request, which is the sequence a
+ * relayed response that nginx then answers for itself takes: the status the
+ * upstream chose reaches a gate, which exempts it and clears the record it
+ * read, and a status nginx chooses afterwards reaches the setter, which
+ * examines it as it examines any other.  The report belongs to the request
+ * rather than to either of them, so it is made once however many undescribed
+ * statuses follow.
+ */
+
+static ngx_int_t
+ngx_http_status_test_set_mixed(void)
+{
+    ngx_int_t            rc;
+    ngx_http_request_t  *r;
+
+    rc = NGX_OK;
+
+    r = ngx_http_status_test_req();
+    r->upstream = &ngx_http_status_test_u;
+    r->upstream->headers_in.status_n = 42;
+    r->status_upstream = 1;
+
+    /* the gate the status the upstream chose reaches */
+
+    if (!ngx_http_status_relayed(r)) {
+        ngx_http_status_report(r, 42);
+    }
+
+    r->status_upstream = 0;
+
+    ngx_http_status_test_assert(rc, r->status_reported == 0
+                                    && ngx_http_status_test_alerts == 0,
+                                "the status an upstream chose was reported at "
+                                "the gate that is meant to exempt it");
+
+    /* and the setter a status nginx chooses for the same request reaches */
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_set(r, 306) == NGX_ERROR
+                          && r->headers_out.status == 0
+                          && r->status_final == 0
+                          && r->status_reported == 1
+                          && ngx_http_status_test_alerts == 1,
+                          "a status nginx chose for a request that had been "
+                          "relaying one was exempted by the setter");
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_set(r, 305) == NGX_ERROR
+                          && ngx_http_status_test_alerts == 1,
+                          "the setter reported a request for more than once, "
+                          "so its lines count stores and not requests");
+
+    /* while a status the registry does describe is stored on that request */
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_set(r, NGX_HTTP_BAD_GATEWAY) == NGX_OK
+                          && r->headers_out.status == NGX_HTTP_BAD_GATEWAY
+                          && r->status_final == 1
+                          && ngx_http_status_test_alerts == 1,
+                          "a status the registry describes was refused after "
+                          "one it does not describe had been");
+
+    return rc;
+}
+
 #endif
 
 
@@ -2204,9 +3078,14 @@ static ngx_http_status_test_case_t  ngx_http_status_test_cases[] = {
 
     { ngx_http_status_test_preinit, "the state before initialization", 0 },
 
-    { ngx_http_status_test_signatures, "the published prototypes", 1 },
+    { ngx_http_status_test_signatures,
+      "the published prototypes that answer about a status", 1 },
+    { ngx_http_status_test_signatures_write,
+      "the published prototypes that write", 1 },
     { ngx_http_status_test_helper_signatures,
-      "the prototypes the registry's own header publishes", 1 },
+      "the prototypes of its own header that run the lifecycle", 1 },
+    { ngx_http_status_test_metadata_signatures,
+      "the prototypes of its own header that answer about metadata", 1 },
     { ngx_http_status_test_complete, "every code that must be described", 1 },
     { ngx_http_status_test_undescribed,
       "every code that must not be described", 1 },
@@ -2220,13 +3099,28 @@ static ngx_http_status_test_case_t  ngx_http_status_test_cases[] = {
     { ngx_http_status_test_separation, "those two sets being different", 1 },
     { ngx_http_status_test_difference,
       "how far those two sets differ", 1 },
+    { ngx_http_status_test_flag_sets, "each flag over the whole range", 1 },
+    { ngx_http_status_test_flag_words,
+      "the whole flag word of every code", 1 },
+    { ngx_http_status_test_sections,
+      "where each code is recorded as coming from", 1 },
+    { ngx_http_status_test_provenance,
+      "the reference of a code out of each specification cited", 1 },
+    { ngx_http_status_test_divergent_sections,
+      "the name RFC 9110 recommends being recorded", 1 },
     { ngx_http_status_test_internal, "nginx's own codes", 1 },
+    { ngx_http_status_test_internal_flags,
+      "the flags nginx's own codes carry", 1 },
     { ngx_http_status_test_register, "registration", 1 },
     { ngx_http_status_test_register_refuses,
       "the registrations that are refused", 1 },
     { ngx_http_status_test_sealed, "sealing", 1 },
     { ngx_http_status_test_copied, "a definition being copied", 1 },
+    { ngx_http_status_test_copied_metadata,
+      "every member of a definition being copied", 1 },
     { ngx_http_status_test_exhaustion, "the headroom running out", 1 },
+    { ngx_http_status_test_builtins,
+      "the state initialization leaves behind", 1 },
     { ngx_http_status_test_idempotent, "initializing more than once", 1 },
     { ngx_http_status_test_ranges, "the range macros", 1 },
     { ngx_http_status_test_effective,
@@ -2244,7 +3138,12 @@ static ngx_http_status_test_case_t  ngx_http_status_test_cases[] = {
     { ngx_http_status_test_report, "reporting an undescribed status", 1 },
     { ngx_http_status_test_report_exempts,
       "the status an upstream chose being exempt from reporting", 1 },
-    { ngx_http_status_test_set_reports, "the setter reporting", 1 },
+    { ngx_http_status_test_set_reports,
+      "the setter reporting and refusing", 1 },
+    { ngx_http_status_test_set_relayed,
+      "the setter not reading the record of who chose a status", 1 },
+    { ngx_http_status_test_set_mixed,
+      "the gate and the setter composed on one request", 1 },
 #endif
 
     { NULL, NULL, 0 }

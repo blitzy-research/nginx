@@ -1889,17 +1889,6 @@ ngx_http_send_header(ngx_http_request_t *r)
      * is refused rather than emitted.  The result of this test is not
      * ignorable and the test is made in every build, because what can be
      * emitted is a matter of memory safety and not of validation.
-     *
-     * The invariant then holds all the way to the encodings: a status that
-     * nginx chooses, here or in a header filter further along the chain, is
-     * held to the same bound by ngx_http_status_set(); the statuses a
-     * configuration chooses, an error_page overwrite and the code of a "return"
-     * or a "try_files" directive, are bounded where those directives are
-     * parsed; the status an embedded Perl handler asks for is bounded where it
-     * asks for it; and a status relayed from an upstream is bounded to three
-     * digits as its status line is parsed.  Each encoder tests the bound again
-     * before it reserves the room, so a status reaching one by any other route
-     * cannot overrun it either.
      */
 
     if (!ngx_http_status_wire_width_ok(r->headers_out.status)) {
@@ -4997,30 +4986,14 @@ ngx_http_core_error_page(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
              * An overwrite becomes the status of the response, and a status is
              * written into a field of exactly three digits by the HTTP/2 and
              * HTTP/3 header filters, so it is bounded here, where it is chosen,
-             * to what those three digits hold, exactly as the "return" and
-             * "try_files" directives bound the codes they are given.  Of the
-             * statuses a configuration chooses directly this was the one left
-             * unbounded: a status nginx chooses itself is held to the same
-             * bound by ngx_http_status_set(), the status method of the embedded
-             * Perl module holds the code it is given to it as well, and a
-             * status relayed from an upstream is bounded to three digits as its
-             * status line is parsed, while this value was bounded only by what
-             * fits in ngx_int_t.
+             * to what those three digits hold.
              *
              * The bound is the width a status is written in and not the range
              * of statuses the registry describes.  The two answer different
              * questions and must not be conflated: which statuses the registry
              * describes governs validating a status and the metadata carried
              * for it, while the width governs whether a response can be emitted
-             * at all.  Every value a configuration could name before is
-             * therefore still named now; a status of three digits the registry
-             * does not describe, 600 say, is sent as the digits of a status
-             * line with no reason phrase, exactly as the same status is when a
-             * "return" directive names it, and is reported once for a request
-             * by a build configured with --with-http_status_validation.  Only
-             * what no response can carry, whichever protocol version it uses,
-             * is refused here, and ngx_http_send_header() refuses it again for
-             * every response.
+             * at all.
              *
              * ngx_atoi() has already refused anything that is not a plain
              * sequence of digits, so a negative value cannot reach this test.

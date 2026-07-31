@@ -2895,21 +2895,25 @@ ngx_http_upstream_intercept_errors(ngx_http_request_t *r,
     ngx_http_core_loc_conf_t  *clcf;
 
     /*
-     * The status intercepted here was authored by the upstream and so is
-     * exempt from validation, even though it re-enters nginx's own error page
+     * The status intercepted here was authored by the upstream and so is exempt
+     * from validation, even though it re-enters nginx's own error page
      * machinery.  This second crossing of the upstream boundary is why the
-     * exemption is scoped to the status, through the status an upstream chose
-     * still being recorded in u->headers_in.status_n, rather than to the call
-     * site: a site scoped exemption would miss this path and report valid
-     * responses once errors are intercepted.  A status that an error_page
-     * directive supplies for the response intercepted here was chosen by the
-     * configuration and is not exempt, which scoping the exemption to the
-     * request rather than to the status would wrongly make it.
+     * exemption cannot be scoped to the call site: a site scoped exemption
+     * would miss this path and report valid responses once errors are
+     * intercepted.  Nor can it be scoped to the request, because a status that
+     * an error_page directive supplies for the response intercepted here was
+     * chosen by the configuration and is not exempt.  So authorship is recorded
+     * on the request, below, at the point where an upstream's status is handed
+     * to that machinery; the gate there reads the record and clears it, so that
+     * the replacement status a "=" form of the directive supplies is examined
+     * as the configuration's even when it repeats the number it replaces.
      */
 
     status = u->headers_in.status_n;
 
     if (status == NGX_HTTP_NOT_FOUND && u->conf->intercept_404) {
+        r->status_upstream = 1;
+
         ngx_http_upstream_finalize_request(r, u, NGX_HTTP_NOT_FOUND);
         return NGX_OK;
     }
@@ -2983,6 +2987,8 @@ ngx_http_upstream_intercept_errors(ngx_http_request_t *r,
                 ngx_http_file_cache_free(r->cache, u->pipe->temp_file);
             }
 #endif
+            r->status_upstream = 1;
+
             ngx_http_upstream_finalize_request(r, u, status);
 
             return NGX_OK;
@@ -3179,12 +3185,17 @@ ngx_http_upstream_process_headers(ngx_http_request_t *r, ngx_http_upstream_t *u)
      * The status is relayed exactly as the upstream sent it, which includes
      * codes nginx does not know and codes below 100, both of which the status
      * line parser accepts.  The status setter is therefore not used here:
-     * validation is exempted by the origin of the status, through the test
-     * every gate applies to the status it is given, and not at this site.
+     * validation is exempted by the origin of the status, and the origin is
+     * recorded on the request as the status is stored, here where it is known,
+     * rather than deduced afterwards from the status having some particular
+     * value.  A status nginx chooses for this response later, a 304 from the
+     * not modified filter or a 206 from the range filter say, goes through the
+     * setter, which clears the record because that status is nginx's own.
      */
 
     r->headers_out.status = u->headers_in.status_n;
     r->headers_out.status_line = u->headers_in.status_line;
+    r->status_upstream = 1;
 
     r->headers_out.content_length_n = u->headers_in.content_length_n;
 

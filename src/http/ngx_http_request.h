@@ -576,8 +576,11 @@ struct ngx_http_request_s {
 
     /*
      * the bookkeeping of the status code registry: status_final records that a
-     * response status has been chosen for the request and status_reported that
-     * a status the registry does not describe has been reported for it.  They
+     * response status has been chosen for the request, status_reported that
+     * a status the registry does not describe has been reported for it, and
+     * status_upstream who chose the status the request is presenting to
+     * nginx's own status machinery, so that authorship is recorded where it is
+     * known instead of being guessed later from the value of the status.  They
      * are bit fields in the request structure rather than module context data,
      * following limit_conn_status and limit_req_status above; the request pool
      * they live in is private to a request, so no thread local storage is
@@ -595,6 +598,7 @@ struct ngx_http_request_s {
 
     unsigned                          status_final:1;
     unsigned                          status_reported:1;
+    unsigned                          status_upstream:1;
 
     /* used to parse HTTP headers */
 

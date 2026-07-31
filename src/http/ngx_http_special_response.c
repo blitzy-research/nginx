@@ -410,19 +410,25 @@ static ngx_str_t ngx_http_error_pages[NGX_HTTP_STATUS_ERROR_PAGE_ROWS] = {
 /*
  * When HTTP status validation is enabled, the status this function is given is
  * checked here rather than at each of the many places that produce one:
- * ngx_http_finalize_request() routes here the statuses a handler returned, so
- * the return statements that produce them need no change of their own, and
+ * ngx_http_finalize_request() routes here the statuses a handler returned and
  * ngx_http_filter_finalize_request() those a filter chose part way through a
  * response, so the two paths converge on this one point.  A status is reported
  * here, where it was chosen, and not again where it is later promoted over the
  * response status.
  *
- * The exemption is scoped to the status rather than to the call site or to the
- * request: the status an upstream chose is relayed faithfully, and it reaches
- * this function whenever an upstream error is intercepted and re-enters nginx's
- * own error page machinery, while any other status the same request carries was
- * chosen by nginx or by a configuration and is checked as such.  The codes that
- * are internal to nginx are registered, so they are accepted in silence.
+ * The exemption is scoped to the authorship of the status and not to the call
+ * site or to the request: the status an upstream chose is relayed faithfully,
+ * and it reaches this function whenever an upstream error is intercepted and
+ * re-enters nginx's own error page machinery, while any other status the same
+ * request carries was chosen by nginx or by a configuration and is checked as
+ * such.  Authorship is the record that whoever chose the status left on the
+ * request, and not a comparison of the status with the one the upstream sent,
+ * which two authors may choose alike.  This function is where nginx's own error
+ * page machinery takes the status over, so the record is cleared here once the
+ * gate has read it: whatever is chosen from here on, the status an error_page
+ * directive supplies among it, is the configuration's or nginx's own, even
+ * where it repeats the number it replaces.  The codes that are internal to
+ * nginx are registered, so they are accepted in silence.
  */
 
 ngx_int_t
@@ -440,15 +446,35 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
 
     /*
      * Reported and never replaced: the response carries what was asked for.
-     * The report is recorded on the request, so a status that is reported here
-     * is not reported a second time should it also be set, and promoting it
-     * over the response status in ngx_http_send_header() reports nothing at
-     * all.
+     * There is no caller here with a result to act on, this function being
+     * what answers a request that has already gone wrong, so a status is
+     * reported and not refused; ngx_http_status_set() is where a status is
+     * refused, its caller having an error path of its own.  The report is
+     * recorded on the request, so a status that is reported here is not
+     * reported a second time should it also be set, and promoting it over the
+     * response status in ngx_http_send_header() reports nothing at all.
+     *
+     * This is the one gate that is handed a status whose author it does not
+     * know, an upstream's status arriving here whenever an error of its is
+     * intercepted, so this is where the exemption for such a status is applied.
      */
 
-    ngx_http_status_report(r, (ngx_uint_t) error);
+    if (!ngx_http_status_relayed(r)) {
+        ngx_http_status_report(r, (ngx_uint_t) error);
+    }
 
 #endif
+
+    /*
+     * The status is nginx's own from here on: an upstream's status has been
+     * handed over to this machinery and read as such above, and the record is
+     * cleared in every build so that it means the same in each of them.  It is
+     * what the gate in ngx_http_send_error_page() then relies on to examine an
+     * error_page overwrite as the configuration's choice, whatever number the
+     * directive names.
+     */
+
+    r->status_upstream = 0;
 
     r->err_status = error;
 
@@ -628,16 +654,16 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
          * the directive, which keeps the status of what the request is
          * redirected to.
          *
-         * The status an upstream chose is exempt here as it is at every other
-         * gate, and a status an error_page directive supplies is not, even
-         * where it replaces the status of an intercepted upstream response:
-         * the configuration and not the upstream chose it.  This is why the
-         * exemption is scoped to the status rather than to the request.  The
-         * interception path re-enters this machinery while the request still
-         * carries its upstream, so exempting whatever such a request carries
-         * would exempt the replacement status along with the one it replaces.
+         * The configuration and not the upstream chose this status, so it is
+         * never exempt, not even where it replaces the status of an intercepted
+         * upstream response and not even where it names the very same number:
+         * the gate above has already read whatever record the interception left
+         * and cleared it, so the status examined here is examined as the
+         * configuration's.  Deducing authorship from the number instead would
+         * exempt "error_page 599 =599 /uri" for an upstream that answered 599,
+         * which is a configuration overwrite and not a relayed response.
          *
-         * Reported and never replaced, as at every other gate: the response
+         * Reported and never replaced, as at the gate above: the response
          * carries what the configuration asked for, and its width was bounded
          * where the directive was parsed, in every build, so nothing that can
          * be sent depends on this gate.

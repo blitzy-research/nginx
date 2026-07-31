@@ -277,10 +277,6 @@ static ngx_uint_t  ngx_http_status_sealed;
  * that span starts, so a span records only the codes it covers and the row it
  * starts at follows from the spans before it.
  *
- * These spans replace the per class "last code" and "row offset" macros that
- * used to be defined between the rows of that table, four of which shared
- * their names with a set in the header filter that held different values.
- *
  * The spans must therefore account for every row of the table exactly once:
  * 1 + (309 - 301) + (430 - 400) + (508 - 494) is the row count, 53, which
  * ngx_http_status_error_page_check() verifies whenever the registry is
@@ -330,10 +326,19 @@ ngx_http_status_lookup(ngx_uint_t status)
 
 /*
  * The single entry point for a status that nginx chose itself, so that a
- * policy such as validation has one place to apply.  headers_out.status and
- * status_final are the only members written in every build; a build
- * configured with --with-http_status_validation also maintains the
+ * policy such as validation has one place to apply.  headers_out.status,
+ * status_final and status_upstream are the members written in every build; a
+ * build configured with --with-http_status_validation also maintains the
  * status_reported bit.
+ *
+ * A status that reaches this function was chosen by nginx or by a module, and
+ * never by an upstream: the two places that carry an upstream's status across
+ * into nginx's own structures, the copy in ngx_http_upstream_process_headers()
+ * and the interception in ngx_http_upstream_intercept_errors(), both store it
+ * directly and neither calls this function.  Storing therefore records that the
+ * status the request presents to nginx's own status machinery is no longer an
+ * upstream's, which is what keeps a status nginx chooses for a request that has
+ * an upstream, a 304 from the not modified filter say, examined as nginx's.
  *
  * The two ways a status can be wrong are answered differently, because only
  * one of them makes a response impossible to send.
@@ -343,30 +348,35 @@ ngx_http_status_lookup(ngx_uint_t status)
  * value says so, a caller that has an error path of its own answers the
  * request with 500 instead, and ngx_http_send_header() refuses it once more
  * and unconditionally, being the last point a status passes through before the
- * filter chain that emits it.
+ * filter chain that emits it.  Such a status is stored even though it is
+ * refused, so that the final gate still sees it should this result be ignored;
+ * a bound on what a response can carry may not depend on a caller checking.
  *
  * A status the registry does not describe is, by contrast, perfectly sendable,
  * and it is only looked for in a build configured with
- * --with-http_status_validation.  It is reported and nothing more: the
- * response still carries the status that was chosen for it.  Answering such a
- * request with 500 would make a response depend on a build option, which is
- * the one thing this work may not do, and would leave a build whose purpose is
- * to check that responses are unchanged unable to do so, since a status such
- * as the 306 that a "return" directive may name is sendable but is not a code
- * the registry describes.
- *
- * The store happens even when the status was refused, so that the requested
- * status is never quietly replaced by the previous one.
+ * --with-http_status_validation.  There it is reported once for the request and
+ * then refused before it is stored, so that the caller's own error handling
+ * runs and answers the request as it answers any other failure, and so that the
+ * status the request already carried is not replaced by one that build was
+ * configured to object to.  A build without the switch stores it and answers
+ * NGX_OK, so what is sent is unchanged there, which is where it matters.
  *
  * Reporting is the policy ngx_http_status_report() defines, applied at each of
  * the points at which a status is chosen: here for a status a caller chose, the
  * single gate in ngx_http_special_response_handler() for one that a handler
- * returned, and ngx_http_send_error_page() for one an error_page supplied.  The
- * status an upstream chose is exempt at each of them.  An error status that is
- * later moved into the response over the response status is not being chosen
- * again, so it is promoted with ngx_http_status_promote() rather than set and
- * is not reported a second time; what cannot be sent at all is nevertheless
- * tested once more where it is promoted, in ngx_http_send_header().
+ * returned, and ngx_http_send_error_page() for one an error_page supplied.  Of
+ * those three only this one refuses, because only this one has a caller with a
+ * result to act on; the other two are what answers a request that has already
+ * gone wrong.  Of those three only that gate can be handed a status an upstream
+ * chose, so that is where the exemption for such a status is applied, from the
+ * authorship recorded on the request rather than from the value of the status;
+ * a status reaching this function is nginx's own by construction.
+ *
+ * An error status that is later moved into the response over the response
+ * status is not being chosen again, so it is promoted with
+ * ngx_http_status_promote() rather than set and is not reported or refused a
+ * second time; what cannot be sent at all is nevertheless tested once more
+ * where it is promoted, in ngx_http_send_header().
  *
  * The setter is a function that is called in either build, so that a module
  * compiled against one build of nginx behaves in another exactly as a module
@@ -389,13 +399,16 @@ ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
 #if (NGX_HTTP_STATUS_VALIDATION)
 
     /*
-     * Reported and not refused, so that the response is the same one a build
-     * without validation would send.  A status too wide to be sent has been
-     * logged as such above, and is not reported here as well.
+     * A status too wide to be sent has been logged as such above and is not
+     * reported here as well, nor stored and refused twice over.
      */
 
     if (rc == NGX_OK) {
         ngx_http_status_report(r, status);
+
+        if (ngx_http_status_validate(status) != NGX_OK) {
+            return NGX_ERROR;
+        }
     }
 
     /*
@@ -413,6 +426,7 @@ ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
 
     r->headers_out.status = status;
     r->status_final = 1;
+    r->status_upstream = 0;
 
     return rc;
 }
@@ -649,6 +663,59 @@ ngx_http_status_error_page_index(ngx_uint_t status)
     /* a code with no row of its own, so a zero length body */
 
     return 0;
+}
+
+
+/*
+ * The flags of a row that a caller asks after, and none besides: the value is
+ * those of the flags asked for that the code carries, so asking after one flag
+ * answers whether the code carries it and asking after several answers which of
+ * them it carries.  This is how a caller tests the class a code belongs to, or
+ * whether it is one of nginx's own, against the registry rather than against
+ * arithmetic on the status value; heuristic cacheability and eligibility for
+ * expires keep functions of their own because they are asked after so often,
+ * and because which of those two is meant is worth saying in a name.
+ *
+ * A code the registry does not describe carries no flag, which is the same
+ * conservative answer every other query here gives for one.
+ */
+
+ngx_uint_t
+ngx_http_status_has_flags(ngx_uint_t status, ngx_uint_t flags)
+{
+    ngx_http_status_def_t  *def;
+
+    def = ngx_http_status_lookup(status);
+
+    if (def == NULL) {
+        return 0;
+    }
+
+    return def->flags & flags;
+}
+
+
+/*
+ * The section that defines a status code, or the note that the code is one of
+ * nginx's own and has no standing outside it.  The value is the pointer the row
+ * holds rather than a pointer into the row, so a caller reaches that text and
+ * nothing else and can alter no part of the registry; the text lives at least
+ * as long as the definition it arrived with.  A code the registry does not
+ * describe yields NULL, as it does when asked for a phrase.
+ */
+
+const char *
+ngx_http_status_rfc_section(ngx_uint_t status)
+{
+    ngx_http_status_def_t  *def;
+
+    def = ngx_http_status_lookup(status);
+
+    if (def == NULL) {
+        return NULL;
+    }
+
+    return def->rfc_section;
 }
 
 
