@@ -219,7 +219,40 @@ ngx_http_v2_header_filter(ngx_http_request_t *r)
 
     len = h2c->table_update ? 1 : 0;
 
+    /*
+     * A status the HPACK static table does not cover is written as exactly
+     * three digits, and three are always enough.  The status registry accepts
+     * nothing that ngx_http_status_in_range() rejects, so a registered status
+     * stays below NGX_HTTP_STATUS_MAX and is three digits wide; a status
+     * relayed from an upstream is bounded to three digits while its status
+     * line is parsed; and the one status a configuration supplies directly,
+     * from embedded Perl, is range checked where it is set.  The width in the
+     * %03ui conversion below is a minimum rather than a limit and never
+     * truncates, so a wider value would be written past the end of what is
+     * reserved here instead of being cut short.
+     */
+
     len += status ? 1 : 1 + ngx_http_v2_literal_size("418");
+
+#if (NGX_HTTP_STATUS_VALIDATION)
+
+    /*
+     * Reported and never corrected: an output filter emits the status the
+     * response already carries, and the status is not rewritten here.  A
+     * status relayed from an upstream is exempt, because such a status is
+     * whatever the upstream sent, including a value below
+     * NGX_HTTP_STATUS_MIN, which the status line parser accepts.
+     */
+
+    if (r->upstream == NULL
+        && ngx_http_status_validate(r->headers_out.status) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ALERT, fc->log, 0,
+                      "unregistered HTTP status %ui in HTTP/2 response",
+                      r->headers_out.status);
+    }
+
+#endif
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
@@ -711,6 +744,13 @@ ngx_http_v2_early_hints_filter(ngx_http_request_t *r)
     h2c = stream->connection;
 
     len += h2c->table_update ? 1 : 0;
+
+    /*
+     * As in ngx_http_v2_header_filter(), room for exactly three digits of
+     * status.  Here the status is the constant NGX_HTTP_EARLY_HINTS, so the
+     * reservation is exact and nothing outside this function can widen it.
+     */
+
     len += 1 + ngx_http_v2_literal_size("418");
 
     tmp = ngx_palloc(r->pool, tmp_len);

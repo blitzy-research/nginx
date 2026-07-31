@@ -856,18 +856,7 @@ ngx_http_log_status(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
 {
     ngx_uint_t  status;
 
-    if (r->err_status) {
-        status = r->err_status;
-
-    } else if (r->headers_out.status) {
-        status = r->headers_out.status;
-
-    } else if (r->http_version == NGX_HTTP_VERSION_9) {
-        status = 9;
-
-    } else {
-        status = 0;
-    }
+    status = ngx_http_status_effective(r);
 
     return ngx_sprintf(buf, "%03ui", status);
 }
