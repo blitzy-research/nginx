@@ -277,6 +277,10 @@ static ngx_uint_t  ngx_http_status_sealed;
  * that span starts, so a span records only the codes it covers and the row it
  * starts at follows from the spans before it.
  *
+ * These spans replace the per class "last code" and "row offset" macros that
+ * used to be defined between the rows of that table, four of which shared
+ * their names with a set in the header filter that held different values.
+ *
  * The spans must therefore account for every row of the table exactly once:
  * 1 + (309 - 301) + (430 - 400) + (508 - 494) is the row count, 53, which
  * ngx_http_status_error_page_check() verifies whenever the registry is

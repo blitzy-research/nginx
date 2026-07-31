@@ -1892,10 +1892,12 @@ ngx_http_send_header(ngx_http_request_t *r)
      *
      * The invariant then holds all the way to the encodings: a status that
      * nginx chooses, here or in a header filter further along the chain, is
-     * held to the same bound by ngx_http_status_set(); the one status a
-     * configuration chooses, an error_page overwrite, is bounded where it is
-     * parsed; and a status relayed from an upstream is bounded to three digits
-     * as its status line is parsed.  Each encoder tests the bound again
+     * held to the same bound by ngx_http_status_set(); the statuses a
+     * configuration chooses, an error_page overwrite and the code of a "return"
+     * or a "try_files" directive, are bounded where those directives are
+     * parsed; the status an embedded Perl handler asks for is bounded where it
+     * asks for it; and a status relayed from an upstream is bounded to three
+     * digits as its status line is parsed.  Each encoder tests the bound again
      * before it reserves the room, so a status reaching one by any other route
      * cannot overrun it either.
      */
@@ -4995,22 +4997,36 @@ ngx_http_core_error_page(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
              * An overwrite becomes the status of the response, and a status is
              * written into a field of exactly three digits by the HTTP/2 and
              * HTTP/3 header filters, so it is bounded here, where it is chosen,
-             * to what those three digits hold: the same bound the "return"
-             * directive puts on its own code and the status method of the
-             * embedded Perl module on the code it is given.  This is the only
-             * status a configuration chooses directly, and so the only one that
-             * is neither bounded to three digits as it is parsed from an
-             * upstream response nor answered for by whoever wrote the source
-             * that chose it; without this the value is only bounded by what
+             * to what those three digits hold, exactly as the "return" and
+             * "try_files" directives bound the codes they are given.  Of the
+             * statuses a configuration chooses directly this was the one left
+             * unbounded: a status nginx chooses itself is held to the same
+             * bound by ngx_http_status_set(), the status method of the embedded
+             * Perl module holds the code it is given to it as well, and a
+             * status relayed from an upstream is bounded to three digits as its
+             * status line is parsed, while this value was bounded only by what
              * fits in ngx_int_t.
              *
-             * Being a status the registry describes is deliberately not
-             * required: a configuration may name a status nginx has no
-             * knowledge of, and nginx sends it, so only what cannot be sent at
-             * all is refused.  ngx_atoi() has already refused anything that is
-             * not a plain sequence of digits, so a negative value cannot reach
-             * this test.  Zero is not a status: it is the "=" and "=0" form,
-             * which keeps the status of what the request is redirected to.
+             * The bound is the width a status is written in and not the range
+             * of statuses the registry describes.  The two answer different
+             * questions and must not be conflated: which statuses the registry
+             * describes governs validating a status and the metadata carried
+             * for it, while the width governs whether a response can be emitted
+             * at all.  Every value a configuration could name before is
+             * therefore still named now; a status of three digits the registry
+             * does not describe, 600 say, is sent as the digits of a status
+             * line with no reason phrase, exactly as the same status is when a
+             * "return" directive names it, and is reported once for a request
+             * by a build configured with --with-http_status_validation.  Only
+             * what no response can carry, whichever protocol version it uses,
+             * is refused here, and ngx_http_send_header() refuses it again for
+             * every response.
+             *
+             * ngx_atoi() has already refused anything that is not a plain
+             * sequence of digits, so a negative value cannot reach this test.
+             * Zero is not a status: it is the "=" and "=0" form, which keeps
+             * the status of what the request is redirected to, and it is within
+             * the bound in any case.
              */
 
             if (!ngx_http_status_wire_width_ok(overwrite)) {

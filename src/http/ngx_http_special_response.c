@@ -410,7 +410,8 @@ static ngx_str_t ngx_http_error_pages[NGX_HTTP_STATUS_ERROR_PAGE_ROWS] = {
 /*
  * When HTTP status validation is enabled, the status this function is given is
  * checked here rather than at each of the many places that produce one:
- * ngx_http_finalize_request() routes here the statuses a handler returned, and
+ * ngx_http_finalize_request() routes here the statuses a handler returned, so
+ * the return statements that produce them need no change of their own, and
  * ngx_http_filter_finalize_request() those a filter chose part way through a
  * response, so the two paths converge on this one point.  A status is reported
  * here, where it was chosen, and not again where it is later promoted over the

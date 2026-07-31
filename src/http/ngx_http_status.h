@@ -85,6 +85,23 @@ typedef struct {
  * described by the registry: a status relayed from an upstream is not
  * validated, and may fall outside the range the registry covers, but is still
  * emitted through those fields.  The argument is expanded once.
+ *
+ * More than one author can ask for a status too wide to be written, so each of
+ * them is held to this bound where the status is asked for: a status nginx
+ * chooses itself, by ngx_http_status_set(); the status an error_page directive
+ * overwrites a response with, where that directive is parsed, as the code a
+ * "return" directive names is bounded where that directive is parsed; and the
+ * status an embedded Perl handler asks for, where it asks for it, that one
+ * refusing a negative value along with a wide one because it is the one status
+ * that arrives from outside nginx altogether and is captured signed.  A status
+ * relayed from an upstream needs no test of its own, being parsed from a status
+ * line as at most three digits.  A configuration alone is therefore enough to
+ * ask for a status that cannot be written, without any module that a build need
+ * not include, which is why the bound is not left to the one author that
+ * arrives from outside nginx; and because a response is what must be protected
+ * rather than any one of the ways a status reaches one, ngx_http_send_header()
+ * tests the bound once more for every response, and each field encoder tests it
+ * again before reserving room.
  */
 
 #define NGX_HTTP_STATUS_WIRE_MAX  1000
@@ -128,6 +145,22 @@ typedef struct {
  * against must not depend on a build option.  As in other nginx macros the
  * arguments are expanded more than once and must not have side effects, and as
  * in ngx_log_error() the expansion is a statement, so it is used as one.
+ *
+ * A build configured with --with-http_status_validation is a build for
+ * development and for conformance work rather than the build to run: the switch
+ * defaults to off so that the build everyone else uses sends what it always
+ * sent.  Reporting is at alert level, so that it survives an error_log level
+ * that hides anything less, and is made once for a request rather than once for
+ * each place a status is written, so the number of these lines is the number of
+ * requests that chose a status the registry does not describe.
+ *
+ * One consequence is worth stating, because it reads as a defect and is not: a
+ * test that asserts a run produced no alerts at all reports a failure on this
+ * build for a case that deliberately emits such a status, the 306 that a
+ * "return" directive is asked for among them.  What that failure says is that
+ * the status was reported, which is what the build was configured to do; the
+ * response is byte for byte the one a build without the switch sends, and the
+ * same assertion holds on that build.
  */
 
 #define ngx_http_status_report(r, s)                                          \

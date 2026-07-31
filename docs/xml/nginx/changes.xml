@@ -5,6 +5,75 @@
 <change_log title="nginx">
 
 
+<changes ver="1.29.5" date="2026-07-31">
+
+<change type="security">
+<para lang="ru">
+статус ответа, не помещающийся в три цифры,
+зарезервированные для поля ":status" ответов HTTP/2 и HTTP/3,
+мог быть задан методом status() модуля ngx_http_perl_module
+или директивой error_page,
+что приводило к порче заголовков ответа;
+теперь такой статус не принимается.
+</para>
+<para lang="en">
+a response status that does not fit in the three digits
+reserved for the ":status" field of HTTP/2 and HTTP/3 responses
+could be set by the status() method of the ngx_http_perl_module
+or by the "error_page" directive,
+which corrupted the response header block;
+now such a status is not accepted.
+</para>
+</change>
+
+<change type="change">
+<para lang="ru">
+статусы ответов описаны единым реестром;
+из него берутся строка статуса, страница ошибки,
+значение переменной $status
+и пригодность статуса для обработки директивой expires.
+</para>
+<para lang="en">
+response statuses are now described by a single registry,
+which provides the status line, the error page,
+the value of the $status variable,
+and whether a status is eligible for the "expires" directive.
+</para>
+</change>
+
+<change type="change">
+<para lang="ru">
+метод status() модуля ngx_http_perl_module
+требует статус меньше 1000 и не отрицательный;
+ранее принималось любое целое число.
+Запрос с недопустимым статусом завершается
+ошибкой 500, и соединение закрывается.
+</para>
+<para lang="en">
+the status() method of the ngx_http_perl_module
+now requires a status less than 1000 and not negative;
+previously any integer was accepted.
+A request with an invalid status is terminated
+with the 500 error, and the connection is closed.
+</para>
+</change>
+
+<change type="change">
+<para lang="ru">
+статус, задаваемый в директиве error_page после знака "=",
+должен быть меньше 1000,
+как и код директив return и try_files.
+</para>
+<para lang="en">
+a status specified after the "=" sign
+in the "error_page" directive must be less than 1000,
+as the code of the "return" and "try_files" directives already was.
+</para>
+</change>
+
+</changes>
+
+
 <changes ver="1.29.4" date="2025-12-09">
 
 <change type="feature">
