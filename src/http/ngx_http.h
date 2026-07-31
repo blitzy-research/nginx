@@ -168,40 +168,12 @@ ngx_int_t ngx_http_status_register(ngx_http_status_def_t *def);
 
 
 /*
- * A build that does not validate a status leaves the setter only the one test
- * it makes in every build, so a status wide enough to fail that test is the
- * only one such a build has to call the function for: the two stores of every
- * other status are made where the status is set rather than through a call.
- * The sources are ANSI C, which has no keyword asking for a function to be
- * expanded where it is called, and the build does not optimize across objects,
- * so a call would otherwise be made on paths as ordinary as answering a
- * request for a static file, where the status is a constant and the test is
- * made while compiling.  The function is defined, and exported, in either
- * build, so that a module built against one build of nginx still resolves it
- * in another; the name is parenthesized below so that it is the function and
- * not this macro that is named there.
- *
- * As in other nginx macros the arguments are expanded more than once and must
- * not have side effects.
- */
-
-#if !(NGX_HTTP_STATUS_VALIDATION)
-
-#define ngx_http_status_set(r, s)                                            \
-    (ngx_http_status_wire_width_ok(s)                                        \
-     ? ((r)->headers_out.status = (s), (r)->status_final = 1, NGX_OK)        \
-     : (ngx_http_status_set)(r, s))
-
-#endif
-
-
-/*
  * The stores the setter makes, for a status that is not being chosen but moved
- * into the response once the response has been decided, having been chosen,
- * validated and reported already.  Promoting such a status rather than setting
- * it again is what keeps a status validated and reported at a single point of
- * a request; a promotion cannot fail, so it yields no result to test.  The
- * arguments are expanded more than once and must not have side effects.
+ * into the response once the response has been decided.  Such a status was
+ * examined where it was chosen, so promoting it rather than setting it again
+ * is what keeps a status examined at a single point of a request; a promotion
+ * neither examines nor refuses, so it yields no result to test.  The arguments
+ * are expanded more than once and must not have side effects.
  */
 
 #define ngx_http_status_promote(r, s)                                        \

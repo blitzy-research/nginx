@@ -1859,14 +1859,17 @@ ngx_http_send_header(ngx_http_request_t *r)
     }
 
     /*
-     * The status is promoted here rather than chosen, so it is promoted and
-     * not set: a strict build neither validates it again nor refuses it, both
-     * because it was validated and reported where it was chosen, by the gate
-     * in ngx_http_special_response_handler() or by ngx_http_send_error_page(),
-     * and because the response has already been decided and has nothing left
-     * to redirect it to.  The status line is cleared here and not by the
-     * promotion, which does not touch it, so that the promoted status is not
-     * sent under the status line of the one it replaced.
+     * The status is promoted here rather than chosen, so it is promoted and not
+     * set: promotion makes the two stores the setter makes and nothing else.
+     * A strict build does not report it a second time, because the error status
+     * of a request is reported where it is chosen, by the gate in
+     * ngx_http_special_response_handler() or by ngx_http_send_error_page(), and
+     * is written nowhere else except to replace it with a code the registry
+     * describes.  Nor is there anything left to answer a refusal with, the
+     * response having already been decided; the one thing that still cannot be
+     * sent at all is tested below, in every build.  The status line is cleared
+     * here and not by the promotion, which does not touch it, so that the
+     * promoted status is not sent under the status line of the one it replaced.
      */
 
     if (r->err_status) {
@@ -4989,23 +4992,30 @@ ngx_http_core_error_page(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
 
             /*
-             * An overwrite becomes the status of the response, and a status
-             * is written into a field of exactly three digits by the HTTP/2
-             * and HTTP/3 header filters, so it is bounded here, where it is
-             * chosen, as the "return" directive bounds its own code and as the
-             * status method of the embedded Perl module bounds the code it is
-             * given.  This is the only status a configuration chooses
-             * directly, and so the only one that is neither described by the
-             * status registry nor bounded to three digits as it is parsed from
-             * an upstream response; without this the value is only bounded by
-             * what fits in ngx_int_t.  Zero is not a status: it is the "=" and
-             * "=0" form, which keeps the status of what the request is
-             * redirected to.
+             * An overwrite becomes the status of the response, and a status is
+             * written into a field of exactly three digits by the HTTP/2 and
+             * HTTP/3 header filters, so it is bounded here, where it is chosen,
+             * to what those three digits hold: the same bound the "return"
+             * directive puts on its own code and the status method of the
+             * embedded Perl module on the code it is given.  This is the only
+             * status a configuration chooses directly, and so the only one that
+             * is neither bounded to three digits as it is parsed from an
+             * upstream response nor answered for by whoever wrote the source
+             * that chose it; without this the value is only bounded by what
+             * fits in ngx_int_t.
+             *
+             * Being a status the registry describes is deliberately not
+             * required: a configuration may name a status nginx has no
+             * knowledge of, and nginx sends it, so only what cannot be sent at
+             * all is refused.  ngx_atoi() has already refused anything that is
+             * not a plain sequence of digits, so a negative value cannot reach
+             * this test.  Zero is not a status: it is the "=" and "=0" form,
+             * which keeps the status of what the request is redirected to.
              */
 
-            if (overwrite != 0 && !ngx_http_status_in_range(overwrite)) {
+            if (!ngx_http_status_wire_width_ok(overwrite)) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "value \"%V\" must be between 100 and 599",
+                                   "value \"%V\" must be between 0 and 999",
                                    &value[i]);
                 return NGX_CONF_ERROR;
             }

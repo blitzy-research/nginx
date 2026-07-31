@@ -2896,11 +2896,15 @@ ngx_http_upstream_intercept_errors(ngx_http_request_t *r,
 
     /*
      * The status intercepted here was authored by the upstream and so is
-     * exempt from validation, even though it re-enters nginx's own error
-     * page machinery.  This second crossing of the upstream boundary is why
-     * validation is exempted by r->upstream rather than by call site; a
-     * site-scoped exemption would miss this path and reject valid responses
-     * once errors are intercepted.
+     * exempt from validation, even though it re-enters nginx's own error page
+     * machinery.  This second crossing of the upstream boundary is why the
+     * exemption is scoped to the status, through the status an upstream chose
+     * still being recorded in u->headers_in.status_n, rather than to the call
+     * site: a site scoped exemption would miss this path and report valid
+     * responses once errors are intercepted.  A status that an error_page
+     * directive supplies for the response intercepted here was chosen by the
+     * configuration and is not exempt, which scoping the exemption to the
+     * request rather than to the status would wrongly make it.
      */
 
     status = u->headers_in.status_n;
@@ -3173,10 +3177,10 @@ ngx_http_upstream_process_headers(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
     /*
      * The status is relayed exactly as the upstream sent it, which includes
-     * codes nginx does not know and codes below 100, both of which the
-     * status line parser accepts.  The status setter is therefore not used
-     * here: validation is exempted by the origin of the status, through the
-     * r->upstream != NULL test that every gate applies, and not at this site.
+     * codes nginx does not know and codes below 100, both of which the status
+     * line parser accepts.  The status setter is therefore not used here:
+     * validation is exempted by the origin of the status, through the test
+     * every gate applies to the status it is given, and not at this site.
      */
 
     r->headers_out.status = u->headers_in.status_n;

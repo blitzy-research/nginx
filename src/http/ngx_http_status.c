@@ -354,25 +354,20 @@ ngx_http_status_lookup(ngx_uint_t status)
  * The store happens even when the status was refused, so that the requested
  * status is never quietly replaced by the previous one.
  *
- * Reporting belongs to ngx_http_status_report(), which is called from each of
- * the points at which a status is chosen: from here for a status a caller
- * chose, from the single gate in ngx_http_special_response_handler() for one a
- * handler returned, and from ngx_http_send_error_page() for one an error_page
- * directive supplied.  A status an upstream chose is exempt there, and an
- * error status that is later moved into the response over the response status
- * is not being chosen again, so it is promoted with ngx_http_status_promote()
- * rather than set and is neither validated nor reported a second time.
+ * Reporting is the policy ngx_http_status_report() defines, applied at each of
+ * the points at which a status is chosen: here for a status a caller chose, the
+ * single gate in ngx_http_special_response_handler() for one that a handler
+ * returned, and ngx_http_send_error_page() for one an error_page supplied.  The
+ * status an upstream chose is exempt at each of them.  An error status that is
+ * later moved into the response over the response status is not being chosen
+ * again, so it is promoted with ngx_http_status_promote() rather than set and
+ * is not reported a second time; what cannot be sent at all is nevertheless
+ * tested once more where it is promoted, in ngx_http_send_header().
  *
- * ngx_http.h makes this name a macro in a build that does not validate a
- * status, so that the stores for a status narrow enough to be sent are made
- * where the status is set rather than through a call; a wider one is passed to
- * this function, which refuses it, so that the refusal is made and reported
- * the same way in either build.  The name is undefined here for the definition
- * below, which is compiled and exported in either build so that a module built
- * against one build of nginx still resolves it in another.
+ * The setter is a function that is called in either build, so that a module
+ * compiled against one build of nginx behaves in another exactly as a module
+ * compiled against that one does, and so that its argument is evaluated once.
  */
-
-#undef ngx_http_status_set
 
 ngx_int_t
 ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
@@ -391,12 +386,12 @@ ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
 
     /*
      * Reported and not refused, so that the response is the same one a build
-     * without validation would send.  A status that no response can carry was
-     * reported as such already, and is not reported a second time here.
+     * without validation would send.  A status too wide to be sent has been
+     * logged as such above, and is not reported here as well.
      */
 
     if (rc == NGX_OK) {
-        (void) ngx_http_status_report(r, status);
+        ngx_http_status_report(r, status);
     }
 
     /*
@@ -428,57 +423,6 @@ ngx_http_status_validate(ngx_uint_t status)
 
     return NGX_OK;
 }
-
-
-#if (NGX_HTTP_STATUS_VALIDATION)
-
-/*
- * The one place a status the registry does not describe is reported, so that
- * such a status is reported once for a request and reported the same way
- * whatever protocol version the response uses.  It is called from each of the
- * three points at which nginx or a configuration chooses a status: the gate in
- * ngx_http_special_response_handler(), which sees the status a handler returned
- * and finalized the request with, the error_page directive that overwrites that
- * status, and ngx_http_status_set().  Promoting or emitting a status is not
- * choosing it, so a later write of an already reported status, such as moving
- * the error status of a request over its response status or recording a status
- * for the access log alone, is silent.
- *
- * Whether a status was reported is kept on the request itself, and is never
- * inferred from the status having the same value as the error status the
- * request already carries: equal values are not evidence that the value was
- * ever validated, since err_status has authors of its own.  The request scoped
- * flag is therefore what keeps a chosen status from being reported twice.
- *
- * The exemption is scoped to the origin of the status rather than to the call
- * site, because an upstream status is relayed faithfully and the upstream
- * boundary is crossed in more than one place, including the path that
- * intercepts an upstream error and re-enters nginx's own error page machinery
- * while still carrying the upstream status.
- *
- * The status is only ever reported, never replaced: a response is never given a
- * status other than the one that was chosen for it, and the caller stores what
- * was asked for.
- */
-
-ngx_int_t
-ngx_http_status_report(ngx_http_request_t *r, ngx_uint_t status)
-{
-    if (r->upstream != NULL || ngx_http_status_present(status)) {
-        return NGX_OK;
-    }
-
-    if (!r->status_reported) {
-        r->status_reported = 1;
-
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                      "unregistered HTTP status %ui", status);
-    }
-
-    return NGX_ERROR;
-}
-
-#endif
 
 
 /*

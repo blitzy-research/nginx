@@ -416,11 +416,12 @@ static ngx_str_t ngx_http_error_pages[NGX_HTTP_STATUS_ERROR_PAGE_ROWS] = {
  * here, where it was chosen, and not again where it is later promoted over the
  * response status.
  *
- * The exemption is scoped to the origin of the status rather than to the call
- * site: a status that an upstream chose is relayed faithfully, and it reaches
- * this function whenever an upstream error is intercepted and re-enters
- * nginx's own error page machinery.  The codes that are internal to nginx are
- * registered, so they are accepted in silence.
+ * The exemption is scoped to the status rather than to the call site or to the
+ * request: the status an upstream chose is relayed faithfully, and it reaches
+ * this function whenever an upstream error is intercepted and re-enters nginx's
+ * own error page machinery, while any other status the same request carries was
+ * chosen by nginx or by a configuration and is checked as such.  The codes that
+ * are internal to nginx are registered, so they are accepted in silence.
  */
 
 ngx_int_t
@@ -444,7 +445,7 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
      * all.
      */
 
-    (void) ngx_http_status_report(r, (ngx_uint_t) error);
+    ngx_http_status_report(r, (ngx_uint_t) error);
 
 #endif
 
@@ -626,15 +627,14 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
          * the directive, which keeps the status of what the request is
          * redirected to.
          *
-         * A request that carries an upstream is exempt here as it is at every
-         * other gate: the exemption is made once, by the reporter, and is
-         * scoped to the request rather than to the site.  An error_page
-         * directive replacing the status of an intercepted upstream response
-         * is answering for that response, and the interception path re-enters
-         * this machinery while the request still carries its upstream, so one
-         * request scoped test covers both crossings of the upstream boundary;
-         * a second test here would be the site scoped exemption that scoping
-         * exists to avoid.
+         * The status an upstream chose is exempt here as it is at every other
+         * gate, and a status an error_page directive supplies is not, even
+         * where it replaces the status of an intercepted upstream response:
+         * the configuration and not the upstream chose it.  This is why the
+         * exemption is scoped to the status rather than to the request.  The
+         * interception path re-enters this machinery while the request still
+         * carries its upstream, so exempting whatever such a request carries
+         * would exempt the replacement status along with the one it replaces.
          *
          * Reported and never replaced, as at every other gate: the response
          * carries what the configuration asked for, and its width was bounded
@@ -643,7 +643,7 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
          */
 
         if (overwrite) {
-            (void) ngx_http_status_report(r, (ngx_uint_t) overwrite);
+            ngx_http_status_report(r, (ngx_uint_t) overwrite);
         }
 
 #endif

@@ -171,8 +171,8 @@ ngx_http_v2_header_filter(ngx_http_request_t *r)
      * below NGX_HTTP_STATUS_MAX, a status relayed from an upstream is bounded
      * to three digits while its status line is parsed, and the two statuses a
      * configuration supplies directly, from an error_page overwrite and from
-     * embedded Perl, are both range checked where they are chosen.  This
-     * check is what keeps that an invariant rather than an assumption, which
+     * embedded Perl, are both bounded to three digits where they are chosen.
+     * This check is what keeps that an invariant rather than an assumption, and
      * is why it is made in every build: the width in the %03ui conversion
      * below is a minimum and not a limit, so it never truncates and a wider
      * status would be written past the end of what was reserved for it.  A

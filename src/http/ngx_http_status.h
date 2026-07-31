@@ -93,22 +93,65 @@ typedef struct {
     ((s) < NGX_HTTP_STATUS_WIRE_MAX)
 
 
+/*
+ * Whether a status is the one an upstream chose for the response that nginx is
+ * relaying.  Such a status is never validated: an upstream may answer with a
+ * code nginx has never heard of, or with one below 100, and nginx's contract is
+ * to relay what it received.  The test is on the status and not on the request
+ * alone, because a request that has an upstream also carries statuses that
+ * nginx or a configuration chose for it: the path that intercepts an upstream
+ * error re-enters nginx's own error page machinery, where an error_page
+ * directive may replace the status of the intercepted response and a location
+ * the request is redirected to may choose one of its own.  The status an
+ * upstream chose is exempt; those are not.  The arguments are expanded more
+ * than once and must not have side effects.
+ */
+
+#define ngx_http_status_relayed(r, s)                                         \
+    ((r)->upstream != NULL && (r)->upstream->headers_in.status_n == (s))
+
+
 #if (NGX_HTTP_STATUS_VALIDATION)
 
 /*
- * The one place a status that nginx or a configuration chose and that the
- * registry does not describe is reported, so that such a status is reported
- * once for a request and reported the same way whatever protocol version the
- * response uses.  It is called where a status is chosen and not where one is
- * emitted or promoted.  A status an upstream chose is exempt.
+ * Reports a status that nginx or a configuration chose and that the registry
+ * does not describe.  It is used where a status is chosen, and not where one is
+ * emitted or promoted, so that such a status is reported once for a request and
+ * reported the same way whatever protocol version the response uses; the report
+ * is recorded on the request itself and never inferred from the status having
+ * some particular value.  A status is only ever reported: the response still
+ * carries the status that was chosen for it.
+ *
+ * This is the one definition of that policy, and it is a macro rather than a
+ * function so that a build configured with --with-http_status_validation
+ * exports no symbol that a build without it does not: what may be linked
+ * against must not depend on a build option.  As in other nginx macros the
+ * arguments are expanded more than once and must not have side effects, and as
+ * in ngx_log_error() the expansion is a statement, so it is used as one.
  */
 
-ngx_int_t ngx_http_status_report(ngx_http_request_t *r, ngx_uint_t status);
+#define ngx_http_status_report(r, s)                                          \
+    if (!(r)->status_reported                                                 \
+        && !ngx_http_status_relayed(r, s)                                     \
+        && ngx_http_status_validate(s) != NGX_OK)                             \
+    {                                                                         \
+        (r)->status_reported = 1;                                             \
+                                                                              \
+        ngx_log_error(NGX_LOG_ALERT, (r)->connection->log, 0,                 \
+                      "unregistered HTTP status %ui", (ngx_uint_t) (s));      \
+    }
 
 #endif
 
 
-/* init() runs for every configuration parsed, seal() before workers fork */
+/*
+ * init() runs for every configuration parsed, seal() before workers fork.
+ *
+ * error_page_index() is the registry's own answer to which row of the error
+ * page table a status code selects: that mapping is status code knowledge, so
+ * the registry owns it rather than the table's file, and it is therefore
+ * reached by a call.  Like every function here it is defined in either build.
+ */
 
 ngx_int_t ngx_http_status_init(ngx_conf_t *cf);
 void ngx_http_status_seal(void);

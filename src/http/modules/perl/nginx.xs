@@ -117,7 +117,19 @@ status(r, code)
 
     code = SvIV(ST(1));
 
-    if (!ngx_http_status_in_range(code)) {
+    /*
+     * The code is whatever integer a Perl script passed, so this is the one
+     * status in nginx that is neither written by the source that chose it nor
+     * bounded to three digits as it is parsed from a response.  It is bounded
+     * here to what the three digit ":status" field of an HTTP/2 or an HTTP/3
+     * response holds, and to nothing narrower: a script may name a status the
+     * registry does not describe, exactly as an error_page directive may, and
+     * nginx sends it.  A negative value is refused here rather than left to
+     * become a very large unsigned one.  Zero is not a status: it is the value
+     * a request starts with, and send_http_header() answers with 200 for it.
+     */
+
+    if (code < 0 || !ngx_http_status_wire_width_ok(code)) {
         croak("status(): invalid status code");
     }
 
