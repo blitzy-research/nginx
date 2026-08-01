@@ -10,10 +10,14 @@
 <change type="change">
 <para lang="ru">
 статусы ответов описаны единым реестром;
-по нему определяются строка статуса, страница ошибки,
+по нему определяются строка статуса,
 значение переменной $status
 и пригодность статуса для обработки директивой expires;
-отдаваемые ответы при этом не изменились;
+отдаваемые ответы при этом не изменились,
+кроме статуса из четырёх и более цифр:
+такой статус теперь не принимается методом status()
+встроенного перла и не отдаётся по HTTP/2 и HTTP/3,
+где для его цифр зарезервированы ровно три байта;
 с помощью параметра configure --with-http_status_validation,
 выключенного по умолчанию,
 можно проверять статусы, которые выбрал nginx
@@ -25,10 +29,15 @@
 </para>
 <para lang="en">
 response statuses are described by a single registry;
-the status line, the error page, the value of the $status
-variable, and the eligibility of a status
+the status line, the value of the $status variable,
+and the eligibility of a status
 for the "expires" directive are determined from it;
-the responses nginx sends are unchanged;
+the responses nginx sends are unchanged,
+except for a status of four or more digits:
+such a status is now refused by the status() method
+of the embedded perl module and is not sent
+over HTTP/2 and HTTP/3, where exactly three bytes
+are reserved for its digits;
 the --with-http_status_validation configure option,
 off by default, checks the statuses chosen by nginx
 or by a configuration and not described by the registry:

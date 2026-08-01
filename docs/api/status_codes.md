@@ -5,21 +5,29 @@ Reference for the HTTP status codes the registry in
 where it carries one, the semantic flags it is described with, and the
 specification section that defines it.
 
-The registry is the single place that holds this knowledge, and five pieces of
+The registry is the single place that holds this knowledge, and four pieces of
 logic read it rather than each keeping a copy of their own: the reason phrase of
-a status line, the row of the error page table a status selects, the effective
-`$status` value that the log module and the variable evaluator both need, the
-`expires` eligibility of a response, and the setting of a response status, which
-goes through `ngx_http_status_set()` wherever nginx chooses the status itself.
+a status line, the effective `$status` value that the log module and the
+variable evaluator both need, the `expires` eligibility of a response, and the
+setting of a response status, which goes through `ngx_http_status_set()` where
+nginx chooses a status for a response of its own. Direct stores of the response
+status are kept in three places outside that last one, and [setting a
+status](#setting-a-status) says what each is: an upstream's status relayed into
+the response, the two teardown stores made only so that the access log has a
+status, and the `NGX_HTTP_OK` the embedded Perl `send_http_header()` falls back
+to for a script that set none.
 
 What the registry does not hold stays where it is. The status constants in
 `src/http/ngx_http_request.h` are unchanged and remain the way a module names a
 status. The compiled in error page bodies belong to
-`src/http/ngx_http_special_response.c`; the registry supplies only the row of
-that table a status selects, and never the HTML. Status comparisons that decide
-behavior rather than describe a status — the 204 and 304 handling in the header
-filter, the keepalive and lingering close rules of the special response handler
-— are written out where the decision is made.
+`src/http/ngx_http_special_response.c`, and so does the choice of which of them
+a status selects: that file holds its own table of status spans and resolves a
+row from it without consulting the registry at all, because the rows follow the
+shape of that table — spans of consecutive codes — and not the membership of the
+registry. Status comparisons that decide behavior rather than describe a status
+— the 204 and 304 handling in the header filter, the keepalive and lingering
+close rules of the special response handler — are written out where the decision
+is made.
 
 For every status a response can carry, the bytes a client receives are the bytes
 nginx has always sent: each status line, each error page body, each `$status`
@@ -552,14 +560,24 @@ ngx_int_t ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status);
 ngx_int_t ngx_http_status_validate(ngx_uint_t status);
 ```
 
-`ngx_http_status_set()` is the one entry point for a status nginx itself chose.
-It writes exactly two things: the response status, and the bit recording that a
-status has been set for the request. It writes nothing else — not the status
-line, which a caller supplies verbatim or leaves empty, and not the error
-status, which is a different status for a different purpose. A status an
-upstream chose is stored directly, at the boundary it is relayed across, and a
-request that has an upstream attached is exempt from every check the setter
+`ngx_http_status_set()` is the entry point for a status nginx itself chose for a
+response. It writes exactly two things: the response status, and the bit
+recording that a status has been set for the request. It writes nothing else —
+not the status line, which a caller supplies verbatim or leaves empty, and not
+the error status, which is a different status for a different purpose. A status
+an upstream chose is stored directly, at the boundary it is relayed across, and
+a request that has an upstream attached is exempt from every check the setter
 makes on what it is given, on `r->upstream` and never on the number.
+
+That boundary is one of the three places where a store stays direct. Two more
+are the teardown paths: `ngx_http_terminate_request()` and
+`ngx_http_free_request()` each store a status under their own guard, and set the
+bookkeeping bit beside it, purely so that the access log is given the status it
+was given — a code such as `NGX_HTTP_CLIENT_CLOSED_REQUEST`, which no response
+ever carries — because a request being torn down has nothing left to answer a
+refusal with. The third is the embedded Perl `send_http_header()`, which falls
+back to `NGX_HTTP_OK` for a script that set no status at all; a script that does
+set one goes through the setter, after the width of it has been checked.
 
 It answers `NGX_ERROR` in one case, and a caller is expected to act on that:
 
@@ -721,10 +739,15 @@ released, which a worker then reads while writing a status line.
 ## See also
 
 - `src/http/ngx_http.h` — where the five functions of the API are declared, so
-  that every file that includes it can reach them
-- `src/http/ngx_http_status.h` — the record type, the flags, the range, the
-  bound the wire imposes, and the helpers the HTTP core and its own modules use,
-  `ngx_http_status_expires_ok()` among them
+  that every file that includes it can reach them, and where the four helpers
+  the HTTP core and its own modules use are declared beside them,
+  `ngx_http_status_expires_ok()` among them; `ngx_http_status_effective()` takes
+  a request, so declaring the helpers with the record type instead would make
+  that header depend on this one
+- `src/http/ngx_http_status.h` — the record type, the six flags, the range
+  constants and the range macro, and the bound the wire imposes. It declares no
+  function, which is what lets it depend on no other header and be included on
+  its own from anywhere
 - [Status Code API migration guide](../migration/status_code_api.md) — how a
   module author converts a direct assignment to `r->headers_out.status`, and
   what the registry's lifecycle means for a module that registers a code of its
