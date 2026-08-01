@@ -1845,6 +1845,29 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
 }
 
 
+/*
+ * The error status of a request is promoted here rather than chosen, so it is
+ * promoted and not set: promotion makes the two stores the setter makes and
+ * nothing else.  A strict build does not report it a second time, because it
+ * is reported where it is chosen, by the gate in
+ * ngx_http_special_response_handler() or by ngx_http_send_error_page(), and is
+ * written nowhere else except to replace it with a code the registry
+ * describes.  Nor is there anything left to answer a refusal with, the
+ * response having already been decided.  The status line is cleared here and
+ * not by the promotion, which does not touch it, so that the promoted status
+ * is not sent under the status line of the one it replaced.
+ *
+ * The width of the status is then tested, once for every response and whatever
+ * chose it, because this is the last point a response passes through on its
+ * way to the filter chain that emits it.  The ":status" of an HTTP/2 and of an
+ * HTTP/3 response reserves room for exactly three digits, and the width in a
+ * %03ui conversion is a minimum that never truncates, so a status of four
+ * digits or more would be written past the end of what was reserved for it.
+ * Such a response is refused rather than emitted.  The result of the test is
+ * not ignorable and the test is made in every build, because what can be
+ * emitted is a matter of memory safety and not of validation.
+ */
+
 ngx_int_t
 ngx_http_send_header(ngx_http_request_t *r)
 {
@@ -1858,38 +1881,11 @@ ngx_http_send_header(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-    /*
-     * The status is promoted here rather than chosen, so it is promoted and not
-     * set: promotion makes the two stores the setter makes and nothing else.
-     * A strict build does not report it a second time, because the error status
-     * of a request is reported where it is chosen, by the gate in
-     * ngx_http_special_response_handler() or by ngx_http_send_error_page(), and
-     * is written nowhere else except to replace it with a code the registry
-     * describes.  Nor is there anything left to answer a refusal with, the
-     * response having already been decided; the one thing that still cannot be
-     * sent at all is tested below, in every build.  The status line is cleared
-     * here and not by the promotion, which does not touch it, so that the
-     * promoted status is not sent under the status line of the one it replaced.
-     */
-
     if (r->err_status) {
         ngx_http_status_promote(r, r->err_status);
 
         r->headers_out.status_line.len = 0;
     }
-
-    /*
-     * The invariant that the fixed width ":status" of an HTTP/2 and of an
-     * HTTP/3 response rests on, tested once for every response whatever chose
-     * its status, because this is the last point a response passes through on
-     * its way to the filter chain that emits it.  Those encodings reserve room
-     * for exactly three digits, and the width in a %03ui conversion is a
-     * minimum that never truncates, so a status of four digits or more would
-     * be written past the end of what was reserved for it and such a response
-     * is refused rather than emitted.  The result of this test is not
-     * ignorable and the test is made in every build, because what can be
-     * emitted is a matter of memory safety and not of validation.
-     */
 
     if (!ngx_http_status_wire_width_ok(r->headers_out.status)) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,

@@ -416,19 +416,15 @@ static ngx_str_t ngx_http_error_pages[NGX_HTTP_STATUS_ERROR_PAGE_ROWS] = {
  * here, where it was chosen, and not again where it is later promoted over the
  * response status.
  *
- * The exemption is scoped to the authorship of the status and not to the call
- * site or to the request: the status an upstream chose is relayed faithfully,
- * and it reaches this function whenever an upstream error is intercepted and
- * re-enters nginx's own error page machinery, while any other status the same
- * request carries was chosen by nginx or by a configuration and is checked as
- * such.  Authorship is the record that whoever chose the status left on the
- * request, and not a comparison of the status with the one the upstream sent,
- * which two authors may choose alike.  This function is where nginx's own error
- * page machinery takes the status over, so the record is cleared here once the
- * gate has read it: whatever is chosen from here on, the status an error_page
- * directive supplies among it, is the configuration's or nginx's own, even
- * where it repeats the number it replaces.  The codes that are internal to
- * nginx are registered, so they are accepted in silence.
+ * The exemption is scoped to the origin of the response and not to the call
+ * site: the status an upstream chose is relayed faithfully, and it reaches this
+ * function whenever an upstream error is intercepted and re-enters nginx's own
+ * error page machinery, which a site scoped exemption would miss.  A status
+ * that an error_page directive supplies in place of one intercepted here was
+ * chosen by the configuration whatever the response's origin, so it is examined
+ * where that directive is applied, in ngx_http_send_error_page(), even where it
+ * repeats the number it replaces.  The codes that are internal to nginx are
+ * registered, so they are accepted in silence.
  */
 
 ngx_int_t
@@ -456,25 +452,15 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
      *
      * This is the one gate that is handed a status whose author it does not
      * know, an upstream's status arriving here whenever an error of its is
-     * intercepted, so this is where the exemption for such a status is applied.
+     * intercepted, so the exemption for such a status is applied here, from the
+     * origin of the response and never from the value of the status.
      */
 
-    if (!ngx_http_status_relayed(r)) {
+    if (r->upstream == NULL) {
         ngx_http_status_report(r, (ngx_uint_t) error);
     }
 
 #endif
-
-    /*
-     * The status is nginx's own from here on: an upstream's status has been
-     * handed over to this machinery and read as such above, and the record is
-     * cleared in every build so that it means the same in each of them.  It is
-     * what the gate in ngx_http_send_error_page() then relies on to examine an
-     * error_page overwrite as the configuration's choice, whatever number the
-     * directive names.
-     */
-
-    r->status_upstream = 0;
 
     r->err_status = error;
 
@@ -654,14 +640,13 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
          * the directive, which keeps the status of what the request is
          * redirected to.
          *
-         * The configuration and not the upstream chose this status, so it is
-         * never exempt, not even where it replaces the status of an intercepted
-         * upstream response and not even where it names the very same number:
-         * the gate above has already read whatever record the interception left
-         * and cleared it, so the status examined here is examined as the
-         * configuration's.  Deducing authorship from the number instead would
-         * exempt "error_page 599 =599 /uri" for an upstream that answered 599,
-         * which is a configuration overwrite and not a relayed response.
+         * The configuration and not the upstream chose this status, whatever
+         * the origin of the response it replaces, so this gate is not scoped to
+         * that origin as the gate above is and this status is never exempt: not
+         * where it replaces the status of an intercepted upstream response, and
+         * not where it names the very same number.  Were the number consulted
+         * instead, "error_page 599 =599 /uri" for an upstream that answered 599
+         * would pass as a relayed response, which it is not.
          *
          * Reported and never replaced, as at the gate above: the response
          * carries what the configuration asked for, and its width was bounded

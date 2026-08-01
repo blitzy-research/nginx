@@ -10,35 +10,36 @@
 <change type="change">
 <para lang="ru">
 статусы ответов описаны единым реестром;
-из него берутся строка статуса,
-номер строки в таблице страниц ошибок,
+по нему определяются строка статуса, страница ошибки,
 значение переменной $status
 и пригодность статуса для обработки директивой expires;
-с помощью параметра configure --with-http_status_validation
+статус длиннее трёх цифр не отдаётся:
+директива error_page такое значение не принимает,
+а ответ с таким статусом не отправляется;
+с помощью параметра configure --with-http_status_validation,
+выключенного по умолчанию,
 можно проверять статусы, которые выбрал nginx
 или конфигурация и которые не описаны в реестре:
 такой статус записывается в лог ошибок,
-а переданный в ngx_http_status_set() ещё и не принимается,
+а установленный через ngx_http_status_set() ещё и не принимается,
 так что запрос завершается ошибкой 500;
 статусы, полученные от проксируемого сервера, не проверяются.
-По умолчанию параметр выключен,
-и сборка без него отдаёт то же, что и раньше.
 </para>
 <para lang="en">
-response statuses are now described by a single registry,
-which provides the status line, selects a row
-in the error page table, provides the value
-of the $status variable, and tells whether a status
-is eligible for the "expires" directive;
-the --with-http_status_validation configure option can be used
-to check the statuses that nginx or a configuration chose
-and that the registry does not describe:
+response statuses are described by a single registry;
+the status line, the error page, the value of the $status
+variable, and the eligibility of a status
+for the "expires" directive are determined from it;
+a status of more than three digits is refused rather than sent:
+the "error_page" directive rejects such a value,
+and a response is not emitted with one;
+the --with-http_status_validation configure option,
+off by default, checks the statuses chosen by nginx
+or by a configuration and not described by the registry:
 such a status is reported to the error log,
-and one passed to ngx_http_status_set() is also refused,
-so that the request is terminated with the 500 error,
-while statuses relayed from upstream servers are never checked.
-The option is off by default,
-and a build without it sends what it sent before.
+and one set through ngx_http_status_set() is also refused,
+so that the request is terminated with the 500 error;
+statuses relayed from proxied servers are never checked.
 </para>
 </change>
 

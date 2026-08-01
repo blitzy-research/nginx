@@ -93,104 +93,36 @@ typedef struct {
     ((s) < NGX_HTTP_STATUS_WIRE_MAX)
 
 
-/*
- * Whether the status the request is presenting to nginx's own status machinery
- * is the one an upstream chose for the response being relayed.  Such a status
- * is never validated: an upstream may answer with a code nginx has never heard
- * of, or with one below 100, and nginx's contract is to relay what it received.
- *
- * Authorship is recorded on the request where it is known, by the two places
- * that carry an upstream's status across into nginx's own structures, and is
- * never deduced afterwards from the status having some particular value.  Two
- * authors may choose the same number for one request, so equal numbers would
- * not prove equal authorship: an upstream answering 599 for a request whose
- * configuration says "error_page 599 =599 /uri" leaves nginx relaying one 599
- * and the configuration choosing another, and only the first is exempt.
- *
- * A request that has an upstream is therefore not exempt as such.  The path
- * that intercepts an upstream error re-enters nginx's own error page
- * machinery, where an error_page directive may replace the status of the
- * intercepted response and a location the request is redirected to may choose
- * one of its own; those statuses are the configuration's and nginx's, and the
- * record is cleared as each of them is chosen.
- *
- * This answers for the status a request is presenting and not for a status a
- * caller is about to choose, so it belongs at a gate that is handed a status
- * whose author it does not know, which is the one in
- * ngx_http_special_response_handler().  A status handed to
- * ngx_http_status_set() was chosen by nginx or by a module, relaying being done
- * by storing a status directly and not through the setter, so the setter does
- * not consult this: doing so would exempt a status a filter chose for a
- * response whose headers came from an upstream, a 304 or a 206 say, on the
- * strength of the response it is amending.  The argument is expanded once.
- *
- * The record is set where a response status is relayed as well as where an
- * error of an upstream's is intercepted, so that both crossings of the upstream
- * boundary say who chose the status rather than leaving it to be worked out
- * later.  It is cleared by ngx_http_status_set(), which is nginx choosing a
- * status, and by the gate itself once it has read it.  One case is therefore
- * exempt more broadly than it need be, and is worth naming: a status nginx
- * chooses by finalizing a request whose relayed response status is still the
- * one recorded, a 502 after the header of a relayed response has been sent say,
- * is exempt at that gate.  Every status nginx itself chooses is described by
- * the registry, so no report is lost by it; and no response in any build
- * depends on it, reporting being all that the record decides.
- */
-
-#define ngx_http_status_relayed(r)   ((r)->status_upstream)
-
-
 #if (NGX_HTTP_STATUS_VALIDATION)
 
 /*
  * Reports a status that nginx or a configuration chose and that the registry
  * does not describe.  It is used where a status is chosen, and not where one is
  * emitted or promoted, so that such a status is reported once for a request and
- * reported the same way whatever protocol version the response uses; the report
- * is recorded on the request itself and never inferred from the status having
- * some particular value.
+ * reported the same way whatever protocol version the response uses.
  *
- * Reporting is one half of the policy and refusing is the other, and they are
- * applied where each of them can be: a status is reported wherever it is
- * chosen, and refused where the caller that chose it has a result to act on.
- * ngx_http_status_set() therefore reports such a status and then refuses it, so
- * that the caller's own error handling runs and answers the request as it would
- * answer any other failure, while the two gates that stand where a status
- * arrives with no caller to answer to, in ngx_http_special_response_handler()
- * and in ngx_http_send_error_page(), report and let the response carry the
- * status that was chosen for it: those functions are what answers a request
- * that has already gone wrong, so refusing there would leave the request with
- * no response at all rather than with a worse one.
+ * Reporting is one half of the policy and refusing is the other, and each is
+ * applied where it can be.  ngx_http_status_set() reports such a status and
+ * then refuses it, so that the caller's own error handling runs and answers the
+ * request as it would answer any other failure.  The two gates that stand
+ * where a status arrives with no caller to answer to, in
+ * ngx_http_special_response_handler() and in ngx_http_send_error_page(), report
+ * and let the response carry the status chosen for it: those functions are what
+ * answers a request that has already gone wrong, so refusing there would leave
+ * it with no response at all rather than with a worse one.  No status is
+ * rewritten to a different one at any of the three.
  *
- * This reports whatever status it is given: a status an upstream chose is not
- * examined at all, and the one gate that can be handed such a status is where
- * that is decided, by ngx_http_status_relayed() above.  Every other place a
- * status is examined has been handed one that nginx or a configuration chose.
+ * This reports whatever status it is given.  Whether a status an upstream
+ * chose is exempt is decided by its caller, from r->upstream, before the status
+ * reaches here.
  *
- * This is the one definition of that policy, and it is a macro rather than a
- * function so that a build configured with --with-http_status_validation
- * exports no symbol that a build without it does not: what may be linked
- * against must not depend on a build option.  As in other nginx macros the
- * arguments are expanded more than once and must not have side effects, and as
- * in ngx_log_error() the expansion is a statement, so it is used as one.
- *
- * A build configured with --with-http_status_validation is a build for
- * development and for conformance work rather than the build to run: the switch
- * defaults to off, so a build that does not ask for it reports nothing and
- * sends what it always sent, and refusing a status is confined to that build in
- * the same way the reporting is.  A report is made at alert level, so that it
- * survives an error_log level that hides anything less.
- *
- * One consequence is worth stating, because it reads as a defect and is not: on
- * this build a status the registry does not describe is answered differently
- * depending on how it was chosen.  One that reaches the setter is refused, so
- * the request is answered with the 500 that the caller's error handling
- * produces, while one that reaches a gate is reported and sent.  A "return"
- * directive falls on either side of that, since nginx answers it with a
- * response of its own, through the setter, when it names a body or a code below
- * 400, and returns the code to be answered as an error otherwise.  A build
- * without the switch sends the status that was asked for in every one of those
- * cases.
+ * It is a macro rather than a function so that a build configured with
+ * --with-http_status_validation exports no symbol that a build without it does
+ * not: what may be linked against must not depend on a build option.  As in
+ * other nginx macros the arguments are expanded more than once and must not
+ * have side effects, and as in ngx_log_error() the expansion is a statement.
+ * A report is made at alert level, so that it survives an error_log level that
+ * hides anything less.
  */
 
 #define ngx_http_status_report(r, s)                                          \
@@ -214,16 +146,13 @@ typedef struct {
  * the registry owns it rather than the table's file, and it is therefore
  * reached by a call.  Like every function here it is defined in either build.
  *
- * has_flags() and rfc_section() answer for the two members of a row that no
- * other function reads out: the flags a code carries and the section that
- * defines it.  They are what lets a caller test class membership, or nginx's
- * own codes, against the registry rather than against arithmetic on the status
- * value written out where it is needed; the cacheable and the expires
- * questions keep functions of their own because they are asked so often, and
- * because which of the two is meant at a call site is worth saying in its
- * name.  Neither yields the address of a row: has_flags() yields a value and
- * rfc_section() the pointer a row holds, so neither reaches a member a caller
- * was not asking about and neither can be written through.
+ * The surface stops here.  The flags a row carries and the section reference
+ * beside them are the registry's own record of where a code comes from and
+ * what may be said of it, and no function yields either: what is asked of the
+ * registry at run time is whether a code is cacheable and whether nginx's
+ * "expires" processing applies to it, and each of those has a function of its
+ * own above.  Nothing yields the address of a row, so no caller reaches a
+ * member it was not asking about and none can be written through.
  */
 
 ngx_int_t ngx_http_status_init(ngx_conf_t *cf);
@@ -231,8 +160,6 @@ void ngx_http_status_seal(void);
 ngx_uint_t ngx_http_status_effective(ngx_http_request_t *r);
 ngx_uint_t ngx_http_status_expires_ok(ngx_uint_t status);
 ngx_uint_t ngx_http_status_error_page_index(ngx_uint_t status);
-ngx_uint_t ngx_http_status_has_flags(ngx_uint_t status, ngx_uint_t flags);
-const char *ngx_http_status_rfc_section(ngx_uint_t status);
 
 
 #endif /* _NGX_HTTP_STATUS_H_INCLUDED_ */
