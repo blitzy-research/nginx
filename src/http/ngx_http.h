@@ -166,18 +166,18 @@ const ngx_str_t *ngx_http_status_reason(ngx_uint_t status);
 ngx_uint_t ngx_http_status_is_cacheable(ngx_uint_t status);
 ngx_int_t ngx_http_status_register(ngx_http_status_def_t *def);
 
-
 /*
- * The stores the setter makes, for a status that is not being chosen but moved
- * into the response once the response has been decided.  Such a status was
- * examined where it was chosen, so promoting it rather than setting it again
- * is what keeps a status examined at a single point of a request; a promotion
- * neither examines nor refuses, so it yields no result to test.  The arguments
- * are expanded more than once and must not have side effects.
+ * The four the HTTP core and its own modules use, declared here beside the API
+ * they belong to rather than in ngx_http_status.h: ngx_http_status_effective()
+ * takes a request, and the request is a type this file defines, so declaring
+ * them there would have that header depend on this one, which includes it.
+ * init() runs for every configuration parsed, seal() before workers fork.
  */
 
-#define ngx_http_status_promote(r, s)                                        \
-    ((r)->headers_out.status = (s), (r)->status_final = 1)
+ngx_int_t ngx_http_status_init(ngx_conf_t *cf);
+void ngx_http_status_seal(void);
+ngx_uint_t ngx_http_status_effective(ngx_http_request_t *r);
+ngx_uint_t ngx_http_status_expires_ok(ngx_uint_t status);
 
 
 ngx_int_t ngx_http_discard_request_body(ngx_http_request_t *r);

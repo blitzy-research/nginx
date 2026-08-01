@@ -30,6 +30,7 @@ static ngx_int_t ngx_http_core_find_static_location(ngx_http_request_t *r,
 
 static ngx_int_t ngx_http_core_preconfiguration(ngx_conf_t *cf);
 static ngx_int_t ngx_http_core_postconfiguration(ngx_conf_t *cf);
+static ngx_int_t ngx_http_core_init_module(ngx_cycle_t *cycle);
 static void *ngx_http_core_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_core_init_main_conf(ngx_conf_t *cf, void *conf);
 static void *ngx_http_core_create_srv_conf(ngx_conf_t *cf);
@@ -817,7 +818,7 @@ ngx_module_t  ngx_http_core_module = {
     ngx_http_core_commands,                /* module directives */
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
-    NULL,                                  /* init module */
+    ngx_http_core_init_module,             /* init module */
     NULL,                                  /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
@@ -1846,26 +1847,20 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
 
 
 /*
- * The error status of a request is promoted here rather than chosen, so it is
- * promoted and not set: promotion makes the two stores the setter makes and
- * nothing else.  A strict build does not report it a second time, because it
- * is reported where it is chosen, by the gate in
- * ngx_http_special_response_handler() or by ngx_http_send_error_page(), and is
- * written nowhere else except to replace it with a code the registry
- * describes.  Nor is there anything left to answer a refusal with, the
- * response having already been decided.  The status line is cleared here and
- * not by the promotion, which does not touch it, so that the promoted status
- * is not sent under the status line of the one it replaced.
+ * The error status of a request is moved into the response here, over the
+ * response status, and is set like any other status nginx chooses so that the
+ * one setter remains the one way a response status is written.  A strict build
+ * does not report it a second time, because it was reported where it was
+ * chosen, by the gate in ngx_http_special_response_handler() or by
+ * ngx_http_send_error_page(), and the record kept on the request is what says
+ * so.  The status line is cleared after the store and not by it, the setter not
+ * touching the status line, so that the promoted status is not sent under the
+ * status line of the one it replaced.
  *
- * The width of the status is then tested, once for every response and whatever
- * chose it, because this is the last point a response passes through on its
- * way to the filter chain that emits it.  The ":status" of an HTTP/2 and of an
- * HTTP/3 response reserves room for exactly three digits, and the width in a
- * %03ui conversion is a minimum that never truncates, so a status of four
- * digits or more would be written past the end of what was reserved for it.
- * Such a response is refused rather than emitted.  The result of the test is
- * not ignorable and the test is made in every build, because what can be
- * emitted is a matter of memory safety and not of validation.
+ * A refusal here is answered by refusing to send the response: this is the last
+ * point a response passes through on its way to the filter chain that emits it,
+ * so there is nowhere further to carry a result to.  In a build without
+ * validation the setter refuses nothing, so this is the store and the clear.
  */
 
 ngx_int_t
@@ -1882,16 +1877,13 @@ ngx_http_send_header(ngx_http_request_t *r)
     }
 
     if (r->err_status) {
-        ngx_http_status_promote(r, r->err_status);
+        if (ngx_http_status_set(r, (ngx_uint_t) r->err_status) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "invalid status");
+            return NGX_ERROR;
+        }
 
         r->headers_out.status_line.len = 0;
-    }
-
-    if (!ngx_http_status_wire_width_ok(r->headers_out.status)) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                      "HTTP status %ui is too wide to be sent",
-                      r->headers_out.status);
-        return NGX_ERROR;
     }
 
     return ngx_http_top_header_filter(r);
@@ -3452,9 +3444,15 @@ static ngx_int_t
 ngx_http_core_preconfiguration(ngx_conf_t *cf)
 {
     /*
-     * The registry is reinitialized for every configuration that is parsed,
-     * here because preconfiguration runs before any module can register a
-     * status code of its own.
+     * The registry is prepared for every configuration that is parsed, here
+     * because preconfiguration runs before any module can register a status
+     * code of its own.  Preparing it is not rebuilding it: the built-in
+     * definitions and the two tables derived from them do not depend on the
+     * configuration, so they are derived once in the life of the process,
+     * before any worker exists, and every later configuration reads them
+     * exactly as the first one left them.  What a later configuration writes is
+     * the seal, which is one word, and the rows of any status its own modules
+     * register.
      */
 
     if (ngx_http_status_init(cf) != NGX_OK) {
@@ -3470,13 +3468,31 @@ ngx_http_core_postconfiguration(ngx_conf_t *cf)
 {
     ngx_http_top_request_body_filter = ngx_http_request_body_save_filter;
 
-    /*
-     * Every module has had the opportunity to register a status code by now
-     * and the worker processes have not been forked yet, so sealing here
-     * prevents any further mutation and leaves the registry pages shared and
-     * read only, never copied on write, once the workers do fork.
-     */
+    return NGX_OK;
+}
 
+
+/*
+ * The registry is sealed here rather than from postconfiguration, because the
+ * postconfiguration handlers of the HTTP modules run in module order and this
+ * module is the first of them: sealing there would seal every other module out
+ * of registering a status code of its own before its own handler had run.  The
+ * init module handlers run once the whole configuration has been parsed and
+ * before any worker process is forked, so this is the earliest point at which
+ * every module has had that opportunity, and it is still the master process
+ * with no worker to share the registry with.
+ *
+ * A worker therefore only reads the registry, whether it was forked for the
+ * first configuration or for one that replaced it, so no page of the registry
+ * is ever copied on write in a worker and a worker's private memory does not
+ * grow on account of it.  The master does write as each later configuration is
+ * parsed and sealed, and writes only what that configuration changes: the seal,
+ * and the rows of any status that configuration's modules register.
+ */
+
+static ngx_int_t
+ngx_http_core_init_module(ngx_cycle_t *cycle)
+{
     ngx_http_status_seal();
 
     return NGX_OK;
@@ -4975,33 +4991,6 @@ ngx_http_core_error_page(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             if (overwrite == NGX_ERROR) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "invalid value \"%V\"", &value[i]);
-                return NGX_CONF_ERROR;
-            }
-
-            /*
-             * An overwrite becomes the status of the response, and a status is
-             * written into a field of exactly three digits by the HTTP/2 and
-             * HTTP/3 header filters, so it is bounded here, where it is chosen,
-             * to what those three digits hold.
-             *
-             * The bound is the width a status is written in and not the range
-             * of statuses the registry describes.  The two answer different
-             * questions and must not be conflated: which statuses the registry
-             * describes governs validating a status and the metadata carried
-             * for it, while the width governs whether a response can be emitted
-             * at all.
-             *
-             * ngx_atoi() has already refused anything that is not a plain
-             * sequence of digits, so a negative value cannot reach this test.
-             * Zero is not a status: it is the "=" and "=0" form, which keeps
-             * the status of what the request is redirected to, and it is within
-             * the bound in any case.
-             */
-
-            if (!ngx_http_status_wire_width_ok(overwrite)) {
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "value \"%V\" must be between 0 and 999",
-                                   &value[i]);
                 return NGX_CONF_ERROR;
             }
 

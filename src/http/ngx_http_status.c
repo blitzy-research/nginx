@@ -20,19 +20,8 @@
 #define NGX_HTTP_STATUS_NBUILTIN   48
 
 
-/*
- * A span of consecutive status codes that the error page table holds a row
- * for; the spans below map a code to its row.
- */
-
-typedef struct {
-    ngx_uint_t   first;                  /* first status code of the span */
-    ngx_uint_t   last;                   /* one past the last status code */
-} ngx_http_status_page_span_t;
-
-
 static ngx_http_status_def_t *ngx_http_status_lookup(ngx_uint_t status);
-static ngx_int_t ngx_http_status_error_page_check(void);
+static void ngx_http_status_discard(void);
 
 
 /*
@@ -265,30 +254,7 @@ static ngx_http_status_def_t ngx_http_status_defs[NGX_HTTP_STATUS_MAX_DEFS] = {
 static u_short     ngx_http_status_index[NGX_HTTP_STATUS_RANGE];
 static ngx_uint_t  ngx_http_status_nelts;
 static ngx_uint_t  ngx_http_status_sealed;
-
-
-/*
- * The error page table is a zero length row followed by three spans of
- * consecutive status codes, and this table describes those spans, kept here
- * because a table keyed by status code belongs to the registry.  Each entry is
- * the half open range [first, last) of the codes one span covers, and the
- * spans appear in ascending order.  A code selects a row by locating the span
- * that covers it and adding its offset within that span to the row at which
- * that span starts, so a span records only the codes it covers and the row it
- * starts at follows from the spans before it.
- *
- * The spans must therefore account for every row of the table exactly once:
- * 1 + (309 - 301) + (430 - 400) + (508 - 494) is the row count, 53, which
- * ngx_http_status_error_page_check() verifies whenever the registry is
- * initialized.
- */
-
-static ngx_http_status_page_span_t  ngx_http_status_page_spans[] = {
-    { NGX_HTTP_MOVED_PERMANENTLY, 309 },
-    { NGX_HTTP_BAD_REQUEST, 430 },
-    { NGX_HTTP_NGINX_CODES, 508 },
-    { 0, 0 }
-};
+static ngx_uint_t  ngx_http_status_built;
 
 
 /*
@@ -339,26 +305,23 @@ ngx_http_status_lookup(ngx_uint_t status)
  * and the interception in ngx_http_upstream_intercept_errors(), both store it
  * directly and neither calls this function.
  *
- * The two ways a status can be wrong are answered differently, because only
- * one of them makes a response impossible to send.
+ * A build without the switch stores the status and answers NGX_OK, whatever the
+ * status is: what nginx sends is then exactly what it sent before the registry
+ * existed, which is where behaviour matters, and the whole of this function is
+ * two stores.  How wide a status may be is not asked here either, because it is
+ * a property of the encoding a response uses rather than of choosing a status:
+ * an HTTP/1.x status line encodes any width, and the two field encoders that
+ * reserve exactly three bytes for it test it themselves, as does the one
+ * boundary that admits a status from outside nginx altogether, the status()
+ * method of the embedded Perl module.
  *
- * A status too wide for the fixed width ":status" of an HTTP/2 or an HTTP/3
- * response cannot be sent at all, so it is refused in every build: the return
- * value says so, a caller that has an error path of its own answers the
- * request with 500 instead, and ngx_http_send_header() refuses it once more
- * and unconditionally, being the last point a status passes through before the
- * filter chain that emits it.  Such a status is stored even though it is
- * refused, so that the final gate still sees it should this result be ignored;
- * a bound on what a response can carry may not depend on a caller checking.
- *
- * A status the registry does not describe is, by contrast, perfectly sendable,
- * and it is only looked for in a build configured with
- * --with-http_status_validation.  There it is reported once for the request and
- * then refused before it is stored, so that the caller's own error handling
- * runs and answers the request as it answers any other failure, and so that the
- * status the request already carried is not replaced by one that build was
- * configured to object to.  A build without the switch stores it and answers
- * NGX_OK, so what is sent is unchanged there, which is where it matters.
+ * A build configured with --with-http_status_validation looks for a status the
+ * registry does not describe.  Such a status is perfectly sendable, so it is
+ * reported once for the request and then refused before it is stored, so that
+ * the caller's own error handling runs and answers the request as it answers
+ * any other failure, and so that the status the request already carried is not
+ * replaced by one that build was configured to object to.  The status is
+ * examined once and that one answer decides both the report and the refusal.
  *
  * That search is scoped to the origin of the response, by r->upstream, and not
  * to the value of the status: a request answered from an upstream is relayed
@@ -375,11 +338,16 @@ ngx_http_status_lookup(ngx_uint_t status)
  * result to act on; the other two are what answers a request that has already
  * gone wrong.
  *
- * An error status that is later moved into the response over the response
- * status is not being chosen again, so it is promoted with
- * ngx_http_status_promote() rather than set and is not reported or refused a
- * second time; what cannot be sent at all is nevertheless tested once more
- * where it is promoted, in ngx_http_send_header().
+ * A request whose status has already been reported is a request whose status
+ * was already examined, at whichever of those three points chose it, and it is
+ * neither examined nor refused here again.  That is what lets the error status
+ * of a request be moved into the response over the response status, in
+ * ngx_http_send_header(), through this one function and not around it: a status
+ * that a gate reported and deliberately let stand is not then taken away from
+ * the response by the move that finishes it, which would leave a request that
+ * had already gone wrong with no response at all rather than with a worse one.
+ * It is also what keeps one request from being reported more than once when a
+ * status it was refused is followed by another the registry does not describe.
  *
  * The setter is a function that is called in either build, so that a module
  * compiled against one build of nginx behaves in another exactly as a module
@@ -389,31 +357,15 @@ ngx_http_status_lookup(ngx_uint_t status)
 ngx_int_t
 ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
 {
-    ngx_int_t  rc;
-
-    rc = NGX_OK;
-
-    if (!ngx_http_status_wire_width_ok(status)) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                      "HTTP status %ui is too wide to be sent", status);
-        rc = NGX_ERROR;
-    }
-
 #if (NGX_HTTP_STATUS_VALIDATION)
 
-    /*
-     * A status too wide to be sent has been logged as such above and is not
-     * reported here as well, nor stored and refused twice over.  A request
-     * answered from an upstream is exempt, on the origin of the response and
-     * never on the value of the status.
-     */
-
-    if (rc == NGX_OK && r->upstream == NULL) {
+    if (!r->status_reported
+        && r->upstream == NULL
+        && !ngx_http_status_present(status))
+    {
         ngx_http_status_report(r, status);
 
-        if (ngx_http_status_validate(status) != NGX_OK) {
-            return NGX_ERROR;
-        }
+        return NGX_ERROR;
     }
 
     /*
@@ -432,7 +384,7 @@ ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
     r->headers_out.status = status;
     r->status_final = 1;
 
-    return rc;
+    return NGX_OK;
 }
 
 
@@ -536,10 +488,15 @@ ngx_http_status_register(ngx_http_status_def_t *def)
 
 /*
  * Preconfiguration runs again for every configuration that is parsed, that is
- * on every reload and on every configuration test, so this is idempotent: the
- * seal is released, anything a module registered for the previous
- * configuration is discarded, and the index is rebuilt from the built-in
- * definitions alone.
+ * on every reload and on every configuration test, so this is idempotent.
+ *
+ * It is not, however, a rebuild.  The built-in definitions and the index over
+ * them do not depend on the configuration, so they are derived once in the life
+ * of the process and every later configuration finds them exactly as the first
+ * one left them; a reload therefore writes the seal and nothing else, and no
+ * page a worker shares with the master is written after that worker forked.
+ * What a configuration can change is what its own modules registered, and only
+ * a configuration that registered something has anything to discard.
  */
 
 ngx_int_t
@@ -549,13 +506,10 @@ ngx_http_status_init(ngx_conf_t *cf)
 
     ngx_http_status_sealed = 0;
 
-    ngx_memzero(ngx_http_status_index, sizeof(ngx_http_status_index));
-
-    ngx_memzero(&ngx_http_status_defs[NGX_HTTP_STATUS_NBUILTIN + 1],
-                (NGX_HTTP_STATUS_MAX_DEFS - NGX_HTTP_STATUS_NBUILTIN - 1)
-                * sizeof(ngx_http_status_def_t));
-
-    ngx_http_status_nelts = NGX_HTTP_STATUS_NBUILTIN + 1;
+    if (ngx_http_status_built) {
+        ngx_http_status_discard();
+        return NGX_OK;
+    }
 
     for (i = 1; i <= NGX_HTTP_STATUS_NBUILTIN; i++) {
         code = ngx_http_status_defs[i].code;
@@ -571,7 +525,38 @@ ngx_http_status_init(ngx_conf_t *cf)
         ngx_http_status_index[code - NGX_HTTP_STATUS_MIN] = (u_short) i;
     }
 
-    return ngx_http_status_error_page_check();
+    ngx_http_status_nelts = NGX_HTTP_STATUS_NBUILTIN + 1;
+    ngx_http_status_built = 1;
+
+    return NGX_OK;
+}
+
+
+/*
+ * What the configuration before this one registered, and nothing else: a
+ * registration always appends, so the rows past the built-in ones are exactly
+ * those, and a configuration that registered nothing leaves the registry
+ * untouched.
+ */
+
+static void
+ngx_http_status_discard(void)
+{
+    ngx_uint_t  code, i;
+
+    for (i = NGX_HTTP_STATUS_NBUILTIN + 1; i < ngx_http_status_nelts; i++) {
+        code = ngx_http_status_defs[i].code;
+
+        ngx_http_status_index[code - NGX_HTTP_STATUS_MIN] = 0;
+    }
+
+    if (ngx_http_status_nelts > NGX_HTTP_STATUS_NBUILTIN + 1) {
+        ngx_memzero(&ngx_http_status_defs[NGX_HTTP_STATUS_NBUILTIN + 1],
+                    (ngx_http_status_nelts - NGX_HTTP_STATUS_NBUILTIN - 1)
+                    * sizeof(ngx_http_status_def_t));
+
+        ngx_http_status_nelts = NGX_HTTP_STATUS_NBUILTIN + 1;
+    }
 }
 
 
@@ -628,72 +613,4 @@ ngx_http_status_expires_ok(ngx_uint_t status)
     }
 
     return def->flags & NGX_HTTP_STATUS_EXPIRES_OK;
-}
-
-
-/*
- * The row of the error page table that a status code selects.  A code that no
- * span covers, whether it falls between the spans as 444 does or lies outside
- * them altogether, selects the zero length row.
- *
- * A span covers every code in its range, including a code the registry does
- * not define: the row for 498 holds the 404 page, which is how nginx answers
- * a request whose host name is invalid, and the rows for the other codes the
- * registry does not define hold no page at all.  The rows therefore follow
- * the shape of the table and not the membership of the registry.
- */
-
-ngx_uint_t
-ngx_http_status_error_page_index(ngx_uint_t status)
-{
-    ngx_uint_t                    row;
-    ngx_http_status_page_span_t  *span;
-
-    row = 1;
-
-    for (span = ngx_http_status_page_spans; span->first; span++) {
-
-        if (status < span->first) {
-            break;
-        }
-
-        if (status < span->last) {
-            return row + (status - span->first);
-        }
-
-        row += span->last - span->first;
-    }
-
-    /* a code with no row of its own, so a zero length body */
-
-    return 0;
-}
-
-
-/* the spans and the row count are edited by hand, so they are checked */
-
-static ngx_int_t
-ngx_http_status_error_page_check(void)
-{
-    ngx_uint_t                    last, rows;
-    ngx_http_status_page_span_t  *span;
-
-    last = 0;
-    rows = 1;
-
-    for (span = ngx_http_status_page_spans; span->first; span++) {
-
-        if (span->first < last || span->last <= span->first) {
-            return NGX_ERROR;
-        }
-
-        rows += span->last - span->first;
-        last = span->last;
-    }
-
-    if (rows != NGX_HTTP_STATUS_ERROR_PAGE_ROWS) {
-        return NGX_ERROR;
-    }
-
-    return NGX_OK;
 }

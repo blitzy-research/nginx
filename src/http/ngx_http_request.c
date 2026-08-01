@@ -2834,8 +2834,22 @@ ngx_http_terminate_request(ngx_http_request_t *r, ngx_int_t rc)
 
     mr->terminated = 1;
 
+    /*
+     * The status a request is terminated with is written so that the access log
+     * records it, and is not being chosen for a response: 444 and 499 are among
+     * the codes that reach here and no response carries either.  It is stored
+     * rather than set, so that it cannot be refused: a build configured with
+     * --with-http_status_validation refuses a status the registry does not
+     * describe, and there is nothing here to answer a refusal with, so setting
+     * would leave the log a status other than the one it is being given.  The
+     * bit recording that a status has been written is kept; the record of who
+     * chose one is left as it stands, nothing being handed to the gate in
+     * ngx_http_special_response_handler() after this.
+     */
+
     if (rc > 0 && (mr->headers_out.status == 0 || mr->connection->sent == 0)) {
-        (void) ngx_http_status_set(mr, rc);
+        mr->headers_out.status = rc;
+        mr->status_final = 1;
     }
 
     cln = mr->cleanup;
@@ -3911,8 +3925,21 @@ ngx_http_free_request(ngx_http_request_t *r, ngx_int_t rc)
 
 #endif
 
+    /*
+     * The status a request is closed with is written so that the access log
+     * records it, and is not being chosen for a response: 444 and 499 are among
+     * the codes that reach here and no response carries either.  It is stored
+     * rather than set, so that it cannot be refused: a build configured with
+     * --with-http_status_validation refuses a status the registry does not
+     * describe, and there is nothing here to answer a refusal with, so setting
+     * would leave the log a status other than the one it is being given.  The
+     * bit recording that a status has been written is kept; the record of who
+     * chose one is left as it stands, the request being freed after this.
+     */
+
     if (rc > 0 && (r->headers_out.status == 0 || r->connection->sent == 0)) {
-        (void) ngx_http_status_set(r, rc);
+        r->headers_out.status = rc;
+        r->status_final = 1;
     }
 
     if (!r->logged) {

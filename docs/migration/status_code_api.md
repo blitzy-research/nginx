@@ -31,15 +31,22 @@ separate thing a build may be configured to do, with
 `--with-http_status_validation`, and it is off unless it is asked for; see
 [section 9](#9-metadata-and-build-behavior).
 
-One bound is new, and it holds in every build rather than only in a strict one:
-a status of four digits or more is refused rather than emitted, because HTTP/2
-and HTTP/3 reserve exactly three bytes for the digits of `:status` and the
-`%03ui` conversion that writes them pads a narrower value but never truncates a
-wider one. Nothing nginx chooses for itself comes near that width. The one place
-such a number could be named is the embedded Perl `status()` method, which is
-handed whatever integer a script passes and now refuses a value it could not
-send. Section 5 says where the test is made and section 6 says what a caller
-does with the result.
+One bound is new, and it belongs to two encodings rather than to the API: a
+status of four digits or more cannot be carried over HTTP/2 or HTTP/3, because
+each reserves exactly three bytes for the digits of `:status` and the `%03ui`
+conversion that writes them pads a narrower value but never truncates a wider
+one. It is held where each of those encodings has it — in the two header
+filters, before either reserves those bytes — and at the embedded Perl
+`status()` method, which is handed whatever integer a script passes and is the
+one place a status arrives from outside nginx at all.
+
+It is deliberately not held where a status is chosen, so nothing about adopting
+this API narrows what a call site may ask for. An HTTP/1.x status line reserves
+`NGX_INT_T_LEN` bytes for the same number and carries any width, and a
+configuration has always been able to ask for one: `error_page 404 =1234 /wide;`
+is accepted and answers `HTTP/1.1 1234 `. Nothing nginx chooses for itself comes
+near that width in any case. Section 5 names the macro and section 6 says what a
+caller does with a result.
 
 What a module gains by adopting the API is one place at which a status is set,
 and metadata it would otherwise keep a copy of: the wire reason phrase of a
@@ -77,22 +84,31 @@ and in a strict build alike. It writes nothing else — not
 and not `r->err_status`, which is a different status for a different purpose.
 Anything else a call site used to do next it still has to do; see section 6.
 
-It answers `NGX_ERROR` in two cases, and it neither clamps, substitutes, nor
-silently rewrites a status in either:
+It answers `NGX_ERROR` in one case, and it neither clamps, substitutes, nor
+silently rewrites a status:
 
-- **A status too wide to be sent**, in every build. The number is logged at
-  `NGX_LOG_ALERT` as `HTTP status NNN is too wide to be sent` and `NGX_ERROR` is
-  returned. Such a status is stored even so, deliberately, so that the
-  unconditional test in `ngx_http_send_header()` still sees it should a caller
-  ignore the result: a bound on what a response can carry may not depend on
-  anyone checking.
 - **A status the registry does not describe**, in a build configured with
-  `--with-http_status_validation` only, and only for a status nginx originated.
-  It is reported at `NGX_LOG_ALERT` as `unregistered HTTP status NNN` and
-  `NGX_ERROR` is returned *before* the status is stored, so the request keeps
-  whatever status it already carried and the caller's own error handling answers
-  it. A default build stores such a status and answers `NGX_OK`, which is why
-  what a default build sends is unchanged.
+  `--with-http_status_validation` only, and only for a status nginx originated
+  on a request that has not been reported already. It is reported at
+  `NGX_LOG_ALERT` as `unregistered HTTP status NNN` and `NGX_ERROR` is returned
+  *before* the status is stored, so the request keeps whatever status it already
+  carried and the caller's own error handling answers it. A default build stores
+  such a status and answers `NGX_OK`, which is why what a default build sends is
+  unchanged.
+
+How wide a status is has nothing to do with this. A status of four digits is a
+status the registry does not describe like any other: a default build stores it
+and answers `NGX_OK`, and a strict build reports and refuses it in the same
+breath as a narrower one it does not describe. The bound on width is the two
+header filters' own, as section 1 explains.
+
+A request whose status has already been reported is a request whose status has
+already been examined, and it is neither examined nor refused again. That is
+what lets `ngx_http_send_header()` move the error status of a request over its
+response status through this function rather than around it: a status one of the
+two gates of section 9 reported and deliberately let stand is not then taken
+away from the response by the move that finishes it. It is also why one request
+is one line in the log however many statuses it is given.
 
 It never refuses a status merely because `r->status_final` is already set. A
 status may legitimately be set again after a response has been decided, and a
@@ -222,35 +238,48 @@ counting on them.
 
 ## 4. Lifecycle and custom registration
 
-Alongside the five functions of section 2, `src/http/ngx_http_status.h` declares
-the helpers the HTTP core and the modules that ship with it use:
+Alongside the five functions of section 2, `src/http/ngx_http.h` declares the
+helpers the HTTP core and the modules that ship with it use:
 
 ```c
 ngx_int_t ngx_http_status_init(ngx_conf_t *cf);
 void ngx_http_status_seal(void);
 ngx_uint_t ngx_http_status_effective(ngx_http_request_t *r);
 ngx_uint_t ngx_http_status_expires_ok(ngx_uint_t status);
-ngx_uint_t ngx_http_status_error_page_index(ngx_uint_t status);
 ```
+
+They are declared there rather than in `src/http/ngx_http_status.h` because each
+takes a type that arrives through that aggregator, `ngx_conf_t` or
+`ngx_http_request_t`, and declaring them there is what lets
+`src/http/ngx_http_status.h` include nothing but `ngx_config.h` and `ngx_core.h`
+and so be included directly, on its own, from anywhere.
 
 These are not the module-facing API — a module adopting the registry calls the
 five functions of section 2 — but they are not private either. Each has
 **external linkage**, because each is called from a translation unit other than
 the one that defines it: `init()` and `seal()` from the HTTP core module,
-`effective()` from the log module and the variable evaluator, `expires_ok()`
-from the headers filter, and `error_page_index()` from the special response
-handler. Only the registry's own lookup and its self-check are `static`. A
-module may call `expires_ok()` and `effective()`, described in section 9; the
-other three belong to the core and a module has no reason to call them.
+`effective()` from the log module and the variable evaluator, and `expires_ok()`
+from the headers filter. Only the registry's own lookup and the helper that
+discards a configuration's registrations are `static`. A module may call
+`expires_ok()` and `effective()`, described in section 9; the other two belong
+to the core and a module has no reason to call them.
+
+The row of the error page table that a status selects is **not** among them.
+That mapping belongs to `src/http/ngx_http_special_response.c`, which owns the
+table and is the only thing that reads it, and it is file-local there: a span
+table, a compile-time assertion that the spans account for exactly as many rows
+as the table has, and a `static` function. The registry publishes nothing about
+it.
 
 ### The window
 
 ```text
 core preconfiguration          ngx_http_status_init(cf)
-  |                              unseals, rebuilds, discards registrations
+  |                              unseals and discards registrations
   |  configuration parsing     <-- ngx_http_status_register() is accepted here
+  |  every postconfiguration   <-- and here
   v
-core postconfiguration         ngx_http_status_seal()
+core init module               ngx_http_status_seal()
   |                              registration now answers NGX_ERROR always
   v
 workers fork                   read only, for the life of the configuration
@@ -258,17 +287,19 @@ workers fork                   read only, for the life of the configuration
 
 `ngx_http_status_init()` runs from the HTTP core module's preconfiguration,
 which is before any `http{}` directive is parsed, and `ngx_http_status_seal()`
-from its postconfiguration, which is after every HTTP module has had its chance.
-The window between them is exactly the parsing of a configuration, which is
-strictly before workers fork. Once it has closed,
-`ngx_http_status_register()` answers `NGX_ERROR` unconditionally, and the
-registry is read only for the life of that configuration. A worker only reads
-it.
+from the HTTP core module's `init module` handler, which runs after every
+module's postconfiguration has. The window between them is the parsing of a
+configuration and the postconfiguration pass that follows it, both strictly
+before workers fork. Once it has closed, `ngx_http_status_register()` answers
+`NGX_ERROR` unconditionally, and the registry is read only for the life of that
+configuration. A worker only reads it.
 
-Register from a directive handler or from a module's own preconfiguration, and
-never from a worker. Do not rely on the ordering of postconfiguration callbacks
-to get a registration in: by the time any postconfiguration runs, the registry
-may already be sealed.
+Register from a directive handler, from a module's own preconfiguration, or from
+its postconfiguration, and never from a worker. Sealing from the `init module`
+handler rather than from the core's postconfiguration is what makes the third of
+those safe: were the seal set during the postconfiguration pass, whether a
+registration were accepted would depend on where a module sat in the module
+order.
 
 ### Registration must be repeated for every configuration
 
@@ -356,18 +387,19 @@ parsed, which is exactly what the registration needs.
 ### Default and strict builds
 
 In a default build `ngx_http_status_set()` stores the status and answers
-`NGX_OK` unless the status is too wide to be sent. It looks for nothing else:
-the code that reports an unregistered status is inside a bare
-`#if (NGX_HTTP_STATUS_VALIDATION)` and is absent from the object code of a
-default build altogether. This is why a default build sends what it always
-sent.
+`NGX_OK`, whatever the status is. It looks at nothing at all: the whole of the
+function is two stores, and the code that reports an unregistered status is
+inside a bare `#if (NGX_HTTP_STATUS_VALIDATION)` and is absent from the object
+code of a default build altogether. This is why a default build sends what it
+always sent.
 
 A build configured with `--with-http_status_validation` additionally looks for a
 status that nginx or a configuration chose and that the registry does not
 describe, reports it at `NGX_LOG_ALERT` as `unregistered HTTP status NNN`, and —
-in the setter alone — refuses it. The report is made once for a request rather
-than once per place, so a request whose status is chosen more than once produces
-one line in the log and not several.
+in the setter alone, and only for a request that has not been reported already —
+refuses it. The report is made once for a request rather than once per place, so
+a request whose status is chosen more than once produces one line in the log and
+not several.
 
 ### Validation is scoped to the origin of the response
 
@@ -396,8 +428,9 @@ holds at the gate in `ngx_http_send_error_page()`, which sees the status an
 `error_page ... =NNN` overwrite named. Both are what answers a request that has
 already gone wrong, so refusing there would leave it with no response at all
 rather than with a worse one. Only `ngx_http_status_set()` refuses, because only
-it has a caller with a result to act on. No status is rewritten to a different
-one at any of the three.
+it has a caller with a result to act on, and it does not refuse a status a gate
+has already reported. No status is rewritten to a different one at any of the
+three.
 
 ### `status_final` is a record, not a lock
 
@@ -479,21 +512,31 @@ as `ngx_http_terminate_request()` does:
     }
 ```
 
-For the narrower case of a status that was already examined where it was chosen
-and is merely being moved into the response afterwards, `src/http/ngx_http.h`
-publishes the stores the setter makes as a macro:
+#### A status that is merely being moved
+
+There is no second entry point for a status that was already examined where it
+was chosen and is merely being moved into the response afterwards. The one such
+site in the tree, `ngx_http_send_header()` moving `err_status` over the response
+status, calls `ngx_http_status_set()` like every other:
 
 ```c
-#define ngx_http_status_promote(r, s)                                        \
-    ((r)->headers_out.status = (s), (r)->status_final = 1)
+    if (r->err_status) {
+        if (ngx_http_status_set(r, (ngx_uint_t) r->err_status) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "invalid status");
+            return NGX_ERROR;
+        }
+
+        r->headers_out.status_line.len = 0;
+    }
 ```
 
-A promotion neither examines nor refuses, so it yields no result to test, and it
-is not an exemption from validation but a statement that no status is being
-chosen. Its one use in the tree is `ngx_http_send_header()` moving `err_status`
-over the response status. Its arguments are expanded more than once and must not
-have side effects. A module converting a call site of its own wants
-`ngx_http_status_set()`, not this.
+That works because the setter treats a request whose status has already been
+reported as a request whose status has already been examined, and neither
+examines nor refuses it again — so a status that one of the two gates reported
+and deliberately let stand is not taken away from the response by the move that
+finishes it. A module has nothing to do here: this is the core's own site, and a
+module converting a call site of its own wants the three-line wrapper above.
 
 ### Keep the side effects that were already there
 
@@ -505,7 +548,7 @@ anything a call site did alongside the old assignment stays at the call site. In
     r->headers_out.status_line.len = 0;
 ```
 
-remains beside the promotion, precisely because the API does not clear it.
+remains beside the move, precisely because the API does not clear it.
 Fused effects of a status on the rest of a response — the `header_only` and the
 header clearing that 204 and 304 bring about in the header filter — likewise
 stay where the decision is made, and are not registry flags.

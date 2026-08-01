@@ -120,14 +120,19 @@ status(r, code)
     /*
      * The code is whatever integer a Perl script passed, so this is the one
      * status in nginx that is neither written by the source that chose it nor
-     * bounded to three digits as it is parsed from a response.  It is bounded
-     * here to what the three digit ":status" field of an HTTP/2 or an HTTP/3
-     * response holds, and to nothing narrower: a script may name a status the
-     * registry does not describe, 418 among them, exactly as an error_page
-     * directive may, and nginx sends it.  A negative value is refused here
-     * rather than left to become a very large unsigned one.  Zero is not a
-     * status: it is the value a request starts with, and send_http_header()
-     * answers with 200 for it.
+     * bounded to three digits as it is parsed from a response.  A negative one
+     * is refused here rather than left to become a very large unsigned one when
+     * it is converted, and so is one too wide for the three digit ":status"
+     * field of an HTTP/2 or an HTTP/3 response: this is the producer of that
+     * value, and the only place a status enters nginx from outside it, so it is
+     * where such a value is stopped rather than at each encoder that would have
+     * to write it.
+     *
+     * The bound is the width alone and nothing narrower: a script may name a
+     * status the registry does not describe, 418 among them, exactly as an
+     * error_page directive may, and nginx sends it.  Zero is not a status: it
+     * is the value a request starts with, and send_http_header() answers with
+     * 200 for it.
      *
      * The test is made whatever the build, and not only in one configured with
      * --with-http_status_validation, because what needs protecting is a

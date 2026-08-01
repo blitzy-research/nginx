@@ -26,13 +26,16 @@ nginx has always sent: each status line, each error page body, each `$status`
 value, and each HTTP/2 and HTTP/3 `:status` field. The registry describes a
 status; it never chooses one.
 
-One bound narrows which statuses a response can carry, whoever chose it: a
-status of four digits or more is refused rather than sent, because HTTP/2 and
-HTTP/3 reserve exactly three bytes for the digits of `:status` and a wider one
-would be written past the end of that field. The bound holds in every build, not
-only under strict validation, and is applied at each place that can ask for a
-status; see [HTTP/2 and HTTP/3](#http2-and-http3) for the constant and the list
-of places.
+One bound belongs to two of the three encodings rather than to the registry: a
+status of four digits or more cannot be carried over HTTP/2 or HTTP/3, because
+each reserves exactly three bytes for the digits of `:status` and a wider one
+would be written past the end of that field. It is a bound on those encodings
+and not a rule about which statuses nginx may use — an HTTP/1.x status line
+reserves `NGX_INT_T_LEN` bytes for the same number and carries any width, and
+`error_page 404 =1234 /wide;` has always been accepted and has always answered
+`HTTP/1.1 1234 ` — so it is held where each encoding has it and not where a
+status is chosen. See [HTTP/2 and HTTP/3](#http2-and-http3) for the constant and
+the three places that test it.
 
 Of the 45 status constants, 43 are named `NGX_HTTP_*` and the remaining two are
 `NGX_HTTPS_CERT_ERROR` and `NGX_HTTPS_NO_CERT`. A module written against any of
@@ -62,9 +65,12 @@ on, so nothing about them needs recording.
 
 That total is not kept by hand. The `metadata` target of
 `misc/status_test/GNUmakefile` reads the registry table and requires the number
-of rows in it to agree with the count the registry declares, so a row added or
-removed without this page being brought along fails a check rather than passing
-quietly.
+of rows in it to agree with the count the registry declares, and then requires
+the table below to describe every one of those rows and nothing else, with the
+same phrase, the same flags and the same provenance. A row added or removed
+without this page being brought along fails a check rather than passing quietly,
+and so does a provenance mistyped or moved from one code to another in either
+file.
 
 | Class | Codes | Count |
 | ----- | ----- | ----- |
@@ -92,9 +98,10 @@ without being a registry member. A build configured with the switch writes one
 alert for the request, reading `unregistered HTTP status 306`, and still sends
 that status wherever it arrives with no caller to answer to; the one place it
 refuses such a status is `ngx_http_status_set()`, which has a caller with a
-result to act on. No status is replaced by a different one either way. Refusal
-that has nothing to do with membership is separate: a status too wide for the
-wire is refused in every build, strict or not. See
+result to act on. No status is replaced by a different one either way, and how
+wide a status is has nothing to do with any of this: a status of four digits is
+a status the registry does not describe like any other, and is sent by a build
+without the switch exactly as 306 is. See
 [strict validation](#strict-validation) for the whole of that contract.
 
 **498** looks like an omission and is not a member either. It appears in
@@ -172,8 +179,8 @@ eight of them carry the name RFC 9110 recommends in parentheses.
 
 ## Wire reason phrases
 
-Some described codes carry no reason phrase; the table above reads `_none_` for
-each of them:
+Of the 48 described codes, 36 carry a reason phrase and 12 do not; the table
+above reads `_none_` for each of those 12:
 
 **100, 101, 102, 103, 203, 300, 444, 494, 495, 496, 497, 499.**
 
@@ -283,7 +290,8 @@ that describes a code should describe it completely. Having no consumer to catch
 a wrong one, they are checked against the table itself: the `metadata` target of
 `misc/status_test/GNUmakefile` reads every row and requires its class flags to
 agree with the class its code falls in, and its `rfc_section` to agree with the
-kind of code it is.
+kind of code it is, and requires the row published above to carry the same flags
+and the same provenance as the row the registry is built from.
 
 | Flag | Value | Membership |
 | ---- | ----- | ---------- |
@@ -400,10 +408,35 @@ not actually carry.
 protocol ever emits a reason phrase** and the `reason` member is unused on those
 paths. No phrase can regress over HTTP/2 or HTTP/3, whatever a row holds.
 
-Both protocols reserve exactly three bytes for the digits of a status, which is
-why a status must be below 1000 before it reaches a response.
-`NGX_HTTP_STATUS_WIRE_MAX` and `ngx_http_status_wire_width_ok()` are that bound,
-and it is enforced in every build rather than only under strict validation.
+Both protocols reserve exactly three bytes for the digits of a status, and the
+width in a `%03ui` conversion is a minimum and never a limit, so it pads a
+shorter number but never truncates a longer one: a status of four digits would
+be written past the end of that field. `NGX_HTTP_STATUS_WIRE_MAX` and
+`ngx_http_status_wire_width_ok()` are that bound.
+
+It is tested in exactly three places, in every build, and nowhere else:
+
+- `ngx_http_v2_header_filter()`, before it reserves those three bytes. A
+  response it refuses is not written, so the stream is reset and an alert reads
+  `HTTP status NNN too wide for an HTTP/2 response`.
+- `ngx_http_v3_header_filter()`, the same for QPACK.
+- the `status()` method of the embedded Perl module, which is the one place a
+  status arrives from outside nginx: an integer of a script's choosing is
+  neither parsed from a response nor written by nginx, so it is the only value
+  that is bounded by neither a parser nor the registry. It is refused with
+  `croak("status(): invalid status code")`.
+
+It is deliberately **not** tested where a status is chosen. An HTTP/1.x status
+line reserves `NGX_INT_T_LEN` bytes for the same number and carries any width,
+and a configuration has always been able to ask for one:
+`error_page 404 =1234 /wide;` is accepted and answers `HTTP/1.1 1234 `.
+Refusing that would change what a build without the switch sends, which is the
+one thing that must not change.
+
+Every other source of a status is already bounded to three digits before it gets
+this far. The HTTP/1.x status line parser counts digits and stops at three, the
+FastCGI module converts exactly three characters, and the gRPC and HTTP/2 proxy
+modules reject a `:status` whose length is not three.
 
 ## The record type and the range
 
@@ -442,6 +475,43 @@ nothing for the registry, and a lookup costs no memory whatever the response.
 rather than a function, so the argument is expanded more than once and must not
 have side effects.
 
+### Footprint
+
+The registry is static data: two arrays and the three words of state that go
+with them, written only while a configuration is being parsed — which is
+strictly before workers fork — and read only afterwards.
+
+| Object | Entries | Entry size (LP64) | Bytes |
+| ------ | ------- | ----------------- | ----- |
+| `ngx_http_status_defs[]` | 64 | 40, one `ngx_http_status_def_t` | 2,560 |
+| `ngx_http_status_index[]` | 500 | 2, one `u_short` | 1,000 |
+| the state beside them | 3 | 8, one `ngx_uint_t` | 24 |
+| **Total** | | | **3,584** |
+
+On ILP32 a row measures 20 bytes and a word 4, which makes the same three
+objects 1,280, 1,000 and 12 bytes, or 2,292 in all. Either way the registry
+costs a fraction of the 10 KB it is allowed, and that is the whole of what it
+costs: nothing is allocated for a connection, and nothing for a request. The
+rows that select an error page body are a separate table, and belong to
+`src/http/ngx_http_special_response.c` rather than to the registry.
+
+Row zero of the definitions is a reserved sentinel, so that a zero in the index
+means "not described" and no second table has to record which codes are present.
+Of the 64 rows, that sentinel and the 48 built-in definitions are accounted for,
+which leaves **15 rows of headroom** for [registration](#registering-a-status).
+How many there are is deliberately private to `src/http/ngx_http_status.c`: a
+caller learns the headroom is used up from `ngx_http_status_register()`
+answering `NGX_ERROR`, and not by consulting a number.
+
+Both arrays are built once for the process, by the first
+`ngx_http_status_init()`. A configuration that follows — a reload, or an
+`nginx -t` — discards what the configuration before it registered and re-opens
+the registry, and rebuilds nothing that did not change. A worker only ever reads
+them, whichever configuration it was forked for, so no page of either is copied
+on write and a worker's private memory does not grow on their account. The only
+per-request cost is the two bits of bookkeeping the registry keeps on
+`ngx_http_request_t`, which occupy padding the compiler had already allocated.
+
 ### Querying the registry
 
 The functions that read the metadata on this page are declared in
@@ -460,9 +530,9 @@ for a registered row whose phrase is empty, as
 `ngx_http_status_is_cacheable()` returns zero for an unregistered code, which is
 the conservative answer.
 
-`ngx_http_status_expires_ok()`, declared in `src/http/ngx_http_status.h`,
-answers the `EXPIRES_OK` question on the same terms, and returns zero for an
-unregistered code as well.
+`ngx_http_status_expires_ok()`, declared in `src/http/ngx_http.h` beside the
+five published functions, answers the `EXPIRES_OK` question on the same terms,
+and returns zero for an unregistered code as well.
 
 No function hands out the address of a row: a caller reaches the value it asked
 after, reaches no member it did not ask after, and can alter no part of the
@@ -491,7 +561,7 @@ upstream chose is stored directly, at the boundary it is relayed across, and a
 request that has an upstream attached is exempt from every check the setter
 makes on what it is given, on `r->upstream` and never on the number.
 
-It answers `NGX_ERROR` in two cases, and a caller is expected to act on that:
+It answers `NGX_ERROR` in one case, and a caller is expected to act on that:
 
 ```c
 if (ngx_http_status_set(r, NGX_HTTP_OK) != NGX_OK) {
@@ -500,11 +570,14 @@ if (ngx_http_status_set(r, NGX_HTTP_OK) != NGX_OK) {
 }
 ```
 
-The first case holds in **every** build: a status of four digits or more cannot
-be sent at all, because the three bytes an HTTP/2 or an HTTP/3 response reserves
-for the number are a minimum and not a limit, so a wider one would overrun the
-field. See [HTTP/2 and HTTP/3](#http2-and-http3). The second case holds only in
-a build configured with `--with-http_status_validation`, and is described below.
+That case arises only in a build configured with
+`--with-http_status_validation`, and only for a status the registry does not
+describe on a request that has neither an upstream attached nor a status already
+reported; it is described below. A build without the switch answers `NGX_OK` for
+every status, whatever its value and however wide it is, and the whole of the
+function is two stores. The wrapper is written all the same, so that a module
+compiled against one build behaves in the other, and it costs a branch that the
+compiler removes when the switch is absent.
 
 `ngx_http_status_validate()` answers `NGX_OK` for a code the registry describes
 and `NGX_ERROR` for any other, takes no request, and is defined in either build,
@@ -534,6 +607,15 @@ send, because they are what answers a request that has already gone wrong, and
 refusing there would leave it with no response rather than with a worse one. No
 status is ever rewritten to a different one at any of the three.
 
+A request whose status has already been reported is a request whose status has
+already been examined, and the setter neither examines nor refuses it again.
+That is what lets the last thing `ngx_http_send_header()` does — move the error
+status of a request over its response status — go through the setter and not
+around it: a status that one of the two gates reported and deliberately let
+stand is not then taken away from the response by the move that finishes it. It
+is also why one request is one line in the log even when a status it was refused
+is followed by another the registry does not describe.
+
 A `return` directive falls on either side of that line, which is worth knowing
 before reading a log: nginx answers it with a response of its own, through the
 setter, when the directive names a body or a code below 400, and returns the
@@ -561,16 +643,17 @@ ngx_int_t ngx_http_status_register(ngx_http_status_def_t *def);
 A module may add a code the registry does not describe. Registration is accepted
 only while a configuration is being parsed, which is strictly before workers
 fork: `ngx_http_status_init()` runs from the HTTP core module's preconfiguration
-and `ngx_http_status_seal()` from its postconfiguration, so the window is every
-HTTP module's own configuration parsing. Once it has closed,
+and `ngx_http_status_seal()` from its `init module` handler, which runs after
+every module's postconfiguration has, so the window is every HTTP module's own
+configuration parsing **and** its postconfiguration. Once it has closed,
 `ngx_http_status_register()` answers `NGX_ERROR` unconditionally. Call it from a
 directive handler or from a module's preconfiguration, never from a worker.
 
 It also answers `NGX_ERROR` for a null definition, for a code outside
 `NGX_HTTP_STATUS_MIN` to `NGX_HTTP_STATUS_MAX`, for a code the registry already
-describes, and once the rows the registry keeps spare for registration are used
-up. It writes nothing to the log of its own, so a caller is expected to report a
-refusal, as the example below does. Because
+describes, and once the [rows the registry keeps spare for
+registration](#footprint) are used up. It writes nothing to the log of its own,
+so a caller is expected to report a refusal, as the example below does. Because
 `ngx_http_status_init()` runs again for every configuration parsed, including
 each reload and each `nginx -t`, a registration lasts as long as the
 configuration that made it and must be made again by the next one.
@@ -642,7 +725,8 @@ released, which a worker then reads while writing a status line.
 - `src/http/ngx_http_status.h` — the record type, the flags, the range, the
   bound the wire imposes, and the helpers the HTTP core and its own modules use,
   `ngx_http_status_expires_ok()` among them
-- The Status Code API migration guide — how a module author converts a direct
-  assignment to `r->headers_out.status`, and what the registry's lifecycle means
-  for a module that registers a code of its own
+- [Status Code API migration guide](../migration/status_code_api.md) — how a
+  module author converts a direct assignment to `r->headers_out.status`, and
+  what the registry's lifecycle means for a module that registers a code of its
+  own
 - [Documentation home](../index.md)

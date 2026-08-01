@@ -164,19 +164,17 @@ ngx_http_v2_header_filter(ngx_http_request_t *r)
     }
 
     /*
-     * A status the HPACK static table does not cover is written as exactly
-     * three digits, so a status that needs more is refused here, before any
-     * room is reserved for it.  Every status that reaches this filter is
-     * expected to be three digits wide already: a registered status stays
-     * below NGX_HTTP_STATUS_MAX, a status relayed from an upstream is bounded
-     * to three digits while its status line is parsed, and the two statuses a
-     * configuration supplies directly, from an error_page overwrite and from
-     * embedded Perl, are both bounded to three digits where they are chosen.
-     * This check is what keeps that an invariant rather than an assumption, and
-     * is why it is made in every build: the width in the %03ui conversion
-     * below is a minimum and not a limit, so it never truncates and a wider
-     * status would be written past the end of what was reserved for it.  A
-     * status below 100 is left alone, because the status line parser accepts
+     * This is a memory safety bound belonging to this encoder alone, and not a
+     * rule about which statuses nginx may use.  A status the HPACK static table
+     * does not cover is written below as a literal of exactly three digits:
+     * three bytes are reserved for it, three are declared as the length of the
+     * literal, and the width in the %03ui conversion that writes it is a
+     * minimum rather than a limit, so it never truncates.  A status needing
+     * more digits would therefore be written past the end of the reservation,
+     * which is why one is refused here, before any room is reserved.  Nothing
+     * outside a fixed width encoding needs this: an HTTP/1.x status line
+     * reserves NGX_INT_T_LEN bytes for the same number and encodes any width.
+     * A status below 100 is accepted, because the status line parser accepts
      * one from an upstream and three digits are written for it.
      */
 
@@ -244,15 +242,10 @@ ngx_http_v2_header_filter(ngx_http_request_t *r)
     len = h2c->table_update ? 1 : 0;
 
     /*
-     * A status the HPACK static table does not cover is written below as a
-     * literal of exactly three digits: three bytes are reserved here, three
-     * are declared as the length of the literal, and the width in the %03ui
-     * conversion that writes it is a minimum rather than a limit, so it never
-     * truncates.  Three are enough because a wider status is refused above,
-     * before anything is reserved, and again by the invariant in
-     * ngx_http_send_header() before a response reaches a filter chain, so that
-     * what is reserved and what is written cannot disagree whatever authored
-     * the status.
+     * These are the three bytes the check above protects: a status the HPACK
+     * static table does not cover is written as a literal of exactly three
+     * digits, and three are enough because a wider status was refused before
+     * anything was reserved for it.
      */
 
     len += status ? 1 : 1 + ngx_http_v2_literal_size("418");

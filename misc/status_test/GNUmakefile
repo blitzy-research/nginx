@@ -6,10 +6,10 @@
 #     make
 #     make -f misc/status_test/GNUmakefile
 #
-# and the targets are "test", which is what "all" is, "check", "metadata" and
-# "clean".  Nothing of auto/configure, of the makefile it generates or of the
-# build of nginx reaches this file: it is made by hand, and only when the
-# registry is being worked on.
+# and the targets are "test", which is what "all" is, "check", "runtime",
+# "metadata" and "clean".  Nothing of auto/configure, of the makefile it
+# generates or of the build of nginx reaches this file: it is made by hand, and
+# only when the registry is being worked on.
 #
 # What it does is compile the driver beside it with the compiler, the flags and
 # the include paths of the build, then link the driver against the objects the
@@ -18,10 +18,26 @@
 # generated, as text: that makefile has a default target of its own, so
 # including it would hand this one over, and it is never written to either.
 #
+# "runtime" is the one target that makes nothing.  It runs the tests beside the
+# driver that drive a real nginx, reaching what the driver cannot: the two
+# places an upstream's status crosses into nginx's own structures, the gates
+# that crossing hands it to, the status method of the embedded Perl module, and
+# the bytes of a status line as a client reads them.  Those need the external
+# nginx test harness, which is not part of this repository, so TEST_NGINX_LIB
+# names its lib directory:
+#
+#     make -f misc/status_test/GNUmakefile runtime \
+#         TEST_NGINX_LIB=/path/to/nginx-tests/lib
+#
+# Without it each of those tests reports itself skipped rather than failing, so
+# the target is safe to run in a tree that has no harness to run it with.
+#
 # "metadata" reads the table the registry is built from, also as text, and
 # says whether the flags and the provenance of every row of it answer for the
-# class of the code.  The driver cannot ask that of the registry, which
-# publishes no accessor for either.
+# class of the code, and then whether the reference the registry publishes
+# describes each of those rows the same way.  The driver cannot ask either of
+# the registry, which publishes no accessor for a row's flags or for where it
+# records a code as coming from.
 #
 # Both the object and the program are written under objs/, which is ignored,
 # so that a run of the tests leaves nothing behind to be committed.
@@ -49,11 +65,40 @@ MODULES_OBJ =	objs/ngx_modules.o
 STATUS_OBJ =	objs/src/http/ngx_http_status.o
 STATUS_SRC =	src/http/ngx_http_status.c
 
+# The reference the metadata target holds that source to, which publishes a row
+# of its own for every code the registry describes.
+
+STATUS_MD =	docs/api/status_codes.md
+
+# The tests that drive a real nginx, the runner they are run with, and the lib
+# directory of the external harness they need.  Each is an ordinary variable, so
+# that a run may name a runner of its own or a subset of the tests, and
+# TEST_NGINX_LIB is empty until a run says where that harness is.
+
+TEST_T =	misc/status_test/ngx_http_status.t			\
+		misc/status_test/ngx_http_status_wire.t
+
+PROVE =		prove
+
+TEST_NGINX_LIB =
+
 
 all:		test
 
 
-.PHONY:		all check clean metadata test
+.PHONY:		all check clean metadata runtime test
+
+
+# An object of the build named as a prerequisite and not yet compiled
+# would otherwise be compiled by make itself, out of its own built-in
+# rule and with flags of its own rather than the flags the build was
+# configured with, and the staleness check below would then be answered
+# by an object this makefile had made instead of reporting that the
+# build had not made it.  A rule of the same shape and no recipe cancels
+# the built-in one.  The build is the only thing that compiles the
+# build.
+
+%.o:		%.c
 
 
 # The value of one assignment of the generated makefile, with the lines a
@@ -206,15 +251,94 @@ ngx_metadata =	awk 'function no(c, m) {				\
 			if (e) exit 1 }' $(1)
 
 
+# The reference the registry publishes, read the same way and required to say
+# what the source says: every described code once in each of them, and for each
+# of them the same phrase, the same flags whatever order they are written in,
+# and the same provenance.  A section number mistyped, or moved from one code to
+# another, is then a disagreement between two files written by hand
+# independently, which is the only way it can be seen at all: the provenance of
+# a row is the one member no function of the registry answers from, so no test
+# the driver runs can ask for it.  $(1) is the reference to read, $(2) the
+# source.
+
+ngx_agree =	awk 'function no(f, c, m) { \
+		printf "%s: %d: %s\n", f, c, m; e++ }; \
+		function srt(s, n, a, i, j, t, o) { \
+			n = split(s, a, ","); \
+			for (i = 2; i <= n; i++) \
+				for (j = i; j > 1 && a[j] < a[j - 1]; \
+					j--) { t = a[j]; \
+					a[j] = a[j - 1]; \
+					a[j - 1] = t }; \
+			o = ""; \
+			for (i = 1; i <= n; i++) \
+				o = o (i > 1 ? "," : "") a[i]; \
+			return o }; \
+		function key(ph, fl, rs) { \
+			return ph "|" srt(fl) "|" rs }; \
+		FNR == NR && /^\| Code \| .reason. \| Flags \|/ { \
+			m = 1; md = FILENAME; next }; \
+		FNR == NR && m && $$0 !~ /^\|/ { m = 0; next }; \
+		FNR == NR { if (!m || split($$0, f, "|") != 6 \
+				|| f[2] + 0 < 100) next; \
+			c = f[2] + 0; ph = f[3]; \
+			fl = f[4]; rs = f[5]; \
+			gsub(/[`\t ]/, "", fl); \
+			gsub(/`/, "", ph); \
+			gsub(/^[ \t]+|[ \t]+$$/, "", ph); \
+			gsub(/`/, "", rs); \
+			gsub(/^[ \t]+|[ \t]+$$/, "", rs); \
+			if (ph == "_none_") ph = ""; \
+			if (fl == "_none_") fl = ""; \
+			if (c in d) \
+				no(FILENAME, c, "is published more" \
+					" than once"); \
+			d[c] = key(ph, fl, rs); dn++; next }; \
+		/^static ngx_http_status_def_t \
+			ngx_http_status_defs\[/ { t = 1; next }; \
+		t && /^};/ { t = 0; next }; \
+		!t { next }; \
+		/^[ \t]*\{[ \t]*[0-9]/ { c = $$2 + 0; ph = ""; \
+			if (!/ngx_null_string/) { ph = $$0; \
+				sub(/^[^"]*"/, "", ph); \
+				sub(/".*$$/, "", ph) }; \
+			p = 1; next }; \
+		p == 1 { fl = $$1; sub(/,$$/, "", fl); \
+			gsub(/NGX_HTTP_STATUS_/, "", fl); \
+			gsub(/\|/, ",", fl); \
+			if (fl == "0") fl = ""; \
+			p = 2; next }; \
+		p == 2 { rs = ""; if ($$1 != "NULL") { rs = $$0; \
+				sub(/^[^"]*"/, "", rs); \
+				sub(/".*$$/, "", rs) }; \
+			p = 0; if (c == 0) next; \
+			if (!(c in d)) { no(FILENAME, c, "is" \
+					" described, and the reference"\
+					" publishes no such row"); \
+				next }; \
+			if (d[c] != key(ph, fl, rs)) \
+				no(FILENAME, c, "is described as " \
+					key(ph, fl, rs) \
+					", published as " d[c]); \
+			delete d[c]; next }; \
+		END { for (c in d) no(md, c, "is published, and" \
+					" the source describes no such"\
+					" row"); \
+			if (!dn) { e++; \
+				print md ": publishes no table of" \
+					" rows" }; \
+			if (e) exit 1 }' $(1) $(2)
+
+
 ifeq ($(wildcard $(NGX_MAKEFILE)),)
 
 
-# Nothing has been configured, so there is nothing to read and nothing to
-# link.  No target but clean and metadata is reachable, neither of which
-# needs a build, and none of the reading above is reached: every variable
-# that reads is expanded only where it is used.
+# Nothing has been configured, so there is nothing to read, nothing to link
+# and no nginx to drive.  No target but clean and metadata is reachable,
+# neither of which needs a build, and none of the reading above is reached:
+# every variable that reads is expanded only where it is used.
 
-check test $(TEST_OBJ) $(TEST_BIN):
+check runtime test $(TEST_OBJ) $(TEST_BIN):
 	@echo "$(NGX_MAKEFILE) is not there.  nginx has to be"		\
 		"configured and made first:" >&2
 	@echo "" >&2
@@ -258,6 +382,27 @@ LINK_OBJS =	$(filter-out $(MAIN_OBJ),$(RECIPE_OBJS))
 
 test:		check metadata $(TEST_BIN)
 	$(TEST_BIN)
+
+
+# The tests that drive a real nginx.  They make nothing, so the build is only
+# checked and never linked against; the binary they drive is the one the build
+# left, named absolutely because the harness runs each test from a directory of
+# its own making.  A run without TEST_NGINX_LIB is a run in which each of them
+# reports itself skipped, which is said rather than left to be discovered.
+
+runtime:	check
+	@test -n "$(TEST_NGINX_LIB)" || {				\
+		echo "TEST_NGINX_LIB names no lib directory, so"	\
+			"these tests report themselves skipped.  The"	\
+			"external nginx test harness is what they"	\
+			"need:" >&2;					\
+		echo "" >&2;						\
+		echo "    make -f misc/status_test/GNUmakefile runtime"	\
+			"TEST_NGINX_LIB=/path/to/nginx-tests/lib" >&2;	\
+		echo "" >&2; }
+	TEST_NGINX_BINARY=$(CURDIR)/objs/nginx				\
+		TEST_NGINX_LIB=$(TEST_NGINX_LIB)			\
+		$(PROVE) $(TEST_T)
 
 
 # The driver reaches the registry through <ngx_http.h>, as every other file
@@ -346,6 +491,10 @@ metadata:
 	@$(call ngx_metadata,$(STATUS_SRC)) >&2 || {			\
 		echo "the rows above disagree with the class of their"	\
 			"code or with what the registry documents" >&2;	\
+		exit 1; }
+	@$(call ngx_agree,$(STATUS_MD),$(STATUS_SRC)) >&2 || {		\
+		echo "the rows above are described by the source and"	\
+			"published by the reference differently" >&2;	\
 		exit 1; }
 
 
