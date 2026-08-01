@@ -2835,13 +2835,15 @@ ngx_http_terminate_request(ngx_http_request_t *r, ngx_int_t rc)
     mr->terminated = 1;
 
     /*
-     * The status a request is terminated with is written so that the access log
-     * records it, and is not being chosen for a response: 444 and 499 are among
-     * the codes that reach here and no response carries either.  It is written
-     * with the one API that writes a response status all the same, so that no
-     * write of one stands outside it, and it is written to the main request,
-     * which is the request that is logged.  What decides whether to write it at
-     * all is unchanged.
+     * The status a request is terminated with is one nginx chose, and it is
+     * written so that the access log records it rather than for a response to
+     * carry: 444 and 499 are among the codes that reach here and no response
+     * carries either.  It goes through ngx_http_status_set() all the same, that
+     * being what writes a response status nginx chose, and it is written to the
+     * main request, which is the request that is logged.  The guard admits a
+     * positive termination code only where the main request has no status yet
+     * or has sent nothing, so a status that a response did carry is not
+     * overwritten for the log.
      *
      * There is nothing here to answer a refusal with: this function returns
      * nothing, and the request is being terminated, so a refusal is reported
@@ -3930,12 +3932,14 @@ ngx_http_free_request(ngx_http_request_t *r, ngx_int_t rc)
 #endif
 
     /*
-     * The status a request is closed with is written so that the access log
-     * records it, and is not being chosen for a response: 444 and 499 are among
-     * the codes that reach here and no response carries either.  It is written
-     * with the one API that writes a response status all the same, so that no
-     * write of one stands outside it, and what decides whether to write it at
-     * all is unchanged.
+     * The status a request is closed with is one nginx chose, and it is written
+     * so that the access log records it rather than for a response to carry:
+     * 444 and 499 are among the codes that reach here and no response carries
+     * either.  It goes through ngx_http_status_set() all the same, that being
+     * what writes a response status nginx chose.  The guard admits a positive
+     * closing code only where the request has no status yet or has sent
+     * nothing, so a status that a response did carry is not overwritten for the
+     * log.
      *
      * There is nothing here to answer a refusal with: this function returns
      * nothing, and the request is freed after this, so a refusal is reported

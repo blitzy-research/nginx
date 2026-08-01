@@ -1258,11 +1258,6 @@ if [ $STREAM != NO ]; then
 fi
 
 
-#if [ -r $NGX_OBJS/auto ]; then
-#    . $NGX_OBJS/auto
-#fi
-
-
 if test -n "$NGX_ADDONS"; then
 
     echo configuring additional modules

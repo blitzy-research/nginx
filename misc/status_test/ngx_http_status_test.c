@@ -11,40 +11,31 @@
 
 
 /*
- * A driver for the HTTP status code registry.  The registry publishes five
- * functions through <ngx_http.h>: the one that sets a status a module chose,
- * and the four that answer about a status code and change nothing.  It
- * declares four more in ngx_http_status.h, which reaches this file through
- * that same aggregator - the two that run its lifecycle and the two that
- * answer for the HTTP core and the modules of it.  That header also holds the
- * record a definition is written as and the macros over a status code.  The
- * driver exercises all nine functions, the macros of both headers, and the
- * lifecycle that leaves the registry writable only while a configuration is
- * parsed.
- *
- * The driver is linked against the object tree of a build of nginx by the
- * makefile beside this file:
+ * A driver for the HTTP status code registry.  Of the five functions the
+ * registry publishes through <ngx_http.h>, two write - one sets the status of
+ * a response, the other adds a definition to the registry - and three answer
+ * about a status code without changing anything.  Four more are declared in
+ * ngx_http_status.h: two run the lifecycle, and two answer for the HTTP core
+ * and the modules of it.  That header also holds the record a definition is
+ * written as and the macros over a status code.  All nine, the macros of both
+ * headers, and the lifecycle that leaves the registry writable only while a
+ * configuration is parsed are exercised here.
  *
  *     make -f misc/status_test/GNUmakefile test
  *
  * That makefile links every object of the build but the one which defines
  * main(), and this file defines in its place the four other symbols that
- * object defines and the rest of the tree refers to, so that no source of
- * nginx is compiled a second time and the registry examined here is the one
- * that ships rather than a copy of it.  Nothing in the build depends on this
- * file and auto/configure does not know of it: it is made on request.  It
- * reports on the standard error output and exits zero only when every check
- * passed, so that a script may run it.
+ * object defines, so the registry examined here is the one that ships rather
+ * than a copy of it.  The driver reports on the standard error output and
+ * exits zero only when every check passed.
  *
- * The registry's own header is not included here.  <ngx_http.h> includes it,
- * which is how every other file in the tree reaches the registry, so this one
+ * The registry's own header is not included: <ngx_http.h> includes it, which
+ * is how every other file in the tree reaches the registry, so this one
  * reaches it the same way and would notice were that to stop being true.
  *
  * Which row of the table of error pages a status selects is not asked of the
- * registry and so is not checked here.  That mapping belongs to the one file
- * which sends those pages, is held there beside the table it indexes, and a
- * build of that file fails where the rows and the spans the rows are derived
- * from disagree.
+ * registry and so is not checked here: that mapping is held in the file which
+ * sends those pages, beside the table it indexes.
  */
 
 
@@ -144,6 +135,7 @@ static ngx_int_t ngx_http_status_test_builtin(ngx_uint_t code);
 static ngx_int_t ngx_http_status_test_builtins(void);
 static ngx_int_t ngx_http_status_test_cycle(void);
 static ngx_int_t ngx_http_status_test_idempotent(void);
+static ngx_int_t ngx_http_status_test_headroom_reset(void);
 static ngx_int_t ngx_http_status_test_ranges(void);
 static ngx_int_t ngx_http_status_test_effective(void);
 static ngx_int_t ngx_http_status_test_precedence(void);
@@ -153,6 +145,7 @@ static ngx_int_t ngx_http_status_test_set_width(ngx_uint_t status,
 static ngx_int_t ngx_http_status_test_set_bounds(void);
 static ngx_int_t ngx_http_status_test_set_undescribed(void);
 static ngx_int_t ngx_http_status_test_promote(void);
+static ngx_int_t ngx_http_status_test_promote_undescribed(void);
 static ngx_int_t ngx_http_status_test_relayed(void);
 #if (NGX_HTTP_STATUS_VALIDATION)
 static void ngx_http_status_test_gate(ngx_http_request_t *r,
@@ -164,6 +157,7 @@ static ngx_int_t ngx_http_status_test_reported(ngx_uint_t status,
 static ngx_int_t ngx_http_status_test_report(void);
 static ngx_int_t ngx_http_status_test_report_bytes(void);
 static ngx_int_t ngx_http_status_test_report_exempts(void);
+static ngx_int_t ngx_http_status_test_report_overwrites(void);
 static ngx_int_t ngx_http_status_test_set_reports(void);
 static ngx_int_t ngx_http_status_test_set_wide_reports(void);
 static ngx_int_t ngx_http_status_test_set_relayed(void);
@@ -351,9 +345,8 @@ static ngx_uint_t  ngx_http_status_test_internal_set[] = {
 
 
 /*
- * Codes of the range that the registry does not describe.  Most held an empty
- * slot in the status line table the registry replaced, and 498 never had a
- * constant at all: it is recorded in a comment beside nginx's own codes and is
+ * Codes of the range that the registry does not describe.  498 has no constant
+ * of its own: it is recorded in a comment beside nginx's own codes and is
  * answered with the body of a 404, which is a row of the error page table and
  * not a row of the registry.
  */
@@ -444,12 +437,10 @@ static u_char      ngx_http_status_test_line[NGX_MAX_ERROR_STR];
 
 
 /*
- * A zero-initialized instance of the request, of the connection it is answered
- * on, and of the log that connection reports through, each of them the type
- * nginx itself uses.  A request is allocated from a pool and zeroed when nginx
- * creates it, so a zeroed request is a request in the state nginx starts one
- * in, and the members read here are the three the effective status is chosen
- * from and the log an alert is reported through.
+ * The fixture: a request, the connection it is answered on, and the log that
+ * connection reports through, each of them the type nginx itself uses.  nginx
+ * allocates a request from a pool and zeroes it, so a zeroed request is a
+ * request in the state nginx starts one in.
  *
  * The log carries a writer, which is the hook nginx's own logging offers and
  * which nginx calls in place of writing to the log's own file, so that the
@@ -554,8 +545,6 @@ ngx_http_status_test_phrase(ngx_uint_t code)
     return NULL;
 }
 
-
-/* a request in the state nginx creates one in, on a connection that logs */
 
 static ngx_http_request_t *
 ngx_http_status_test_req(void)
@@ -760,13 +749,9 @@ ngx_http_status_test_signatures_write(void)
 
 
 /*
- * The same again for three of the four helpers ngx_http_status.h declares
- * beside the published API: the two that run the lifecycle, and the one the
- * log module and the variable evaluator read an effective status through.
- * Taking them through pointers here is what asserts that they are declared
- * with external linkage, in that header, and with these types - a helper made
- * static, moved to the aggregator, or given another signature would not
- * compile this.
+ * The same for three of the four helpers ngx_http_status.h declares beside the
+ * published API: the two that run the lifecycle, and the one the log module and
+ * the variable evaluator read an effective status through.
  */
 
 static ngx_int_t
@@ -803,8 +788,6 @@ ngx_http_status_test_helper_signatures(void)
                                 "for a request with no status through its "
                                 "pointer");
 
-    /* sealing having run above, the registry is writable again after init */
-
     ngx_http_status_test_assert(rc, ngx_http_status_validate(306) == NGX_ERROR,
                                 "ngx_http_status_init() did not leave the "
                                 "built-in codes alone through its pointer");
@@ -812,11 +795,6 @@ ngx_http_status_test_helper_signatures(void)
     return rc;
 }
 
-
-/*
- * and for the fourth of them, the one the headers filter asks whether a status
- * may carry what the expires directive adds
- */
 
 static ngx_int_t
 ngx_http_status_test_metadata_signatures(void)
@@ -1041,9 +1019,10 @@ ngx_http_status_test_empty_reasons(void)
 
 
 /*
- * The eight phrases that differ from the name RFC 9110 recommends are the ones
- * nginx has always sent, and correcting one of them would change what is sent.
- * Both forms are compared so that such a correction fails here and says why.
+ * Where a phrase differs from the name RFC 9110 recommends, the bytes nginx
+ * sends are the phrase and not the name, so replacing one would change what is
+ * sent.  Both forms are compared, so that such a replacement fails here and
+ * says why.
  */
 
 static ngx_int_t
@@ -1313,11 +1292,10 @@ ngx_http_status_test_difference(void)
  * nginx's own codes are described by the registry as first-class members of
  * it, so that a build which reports a status the registry does not describe
  * says nothing about them: they are load-bearing signals and not violations of
- * any specification.  What is asserted of each is what the registry answers
- * about it and what a build that reports does with it, the registry publishing
- * no function that yields a row's flags.  That those six rows and no others
- * are flagged as nginx's own is checked instead against the table the registry
- * is built from, by the "metadata" target of the makefile beside this file.
+ * any specification.  Which rows are flagged as nginx's own is checked against
+ * the table the registry is built from, by the "metadata" target of the
+ * makefile beside this file, the registry publishing no function that yields a
+ * row's flags.
  */
 
 static ngx_int_t
@@ -1487,15 +1465,11 @@ ngx_http_status_test_fill_headroom(void)
 
 /*
  * The order the refusals are decided in.  A registration is refused for more
- * than one reason, and a group that only asks whether each reason refuses would
- * pass an implementation that decided them in another order, or one that had
- * already altered the registry by the time it refused.  So each refusal is
- * asked for in a state that only the right order answers: a definition that is
- * not there is refused even where there is no row left to append it to, which
- * is the null check happening before the capacity check; and a code outside the
- * range is refused without the registry being touched, which is the range check
- * happening before the index is probed or a row is taken.  Each is followed by
- * a positive control, so a refusal that refuses everything cannot pass.
+ * than one reason, and asking only whether each reason refuses would pass an
+ * implementation that decided them in another order, or one that had already
+ * altered the registry by the time it refused.  So each refusal is asked for in
+ * a state that only the right order answers, and each is followed by a positive
+ * control, so that a refusal which refuses everything cannot pass.
  */
 
 static ngx_int_t
@@ -1545,13 +1519,12 @@ ngx_http_status_test_refuses_order(void)
 
 
 /*
- * What a registration keeps a copy of, and what it keeps only the address of.
- * The group above proves the descriptor is copied; here the bytes it points at
- * are altered after the registration and the registry is asked again, so a
- * registry that had duplicated them would answer with the bytes as they were.
- * They are borrowed, which is the contract: a caller passes bytes that outlive
- * the registration, and a literal or a static is what that means in practice.
- * The bytes are put back afterwards, the array being static.
+ * The bytes a phrase points at are borrowed and not copied: the contract is
+ * that a caller passes bytes which outlive the registration, and a literal or a
+ * static is what that means in practice.  They are altered after the
+ * registration and the registry asked again, so a registry that had duplicated
+ * them would answer with the bytes as they were, and they are put back
+ * afterwards, the array being static.
  */
 
 static u_char  ngx_http_status_test_lent[] = "205 Reset Content";
@@ -1694,15 +1667,13 @@ ngx_http_status_test_copied(void)
 
 
 /*
- * Every member of a definition is copied, which the group above establishes for
- * the code, the phrase and one flag.  Here the whole descriptor is altered at
- * once instead, the code and both halves of the phrase descriptor and the flags
- * and the section reference together, and the registry is then asked again: a
- * member it pointed at rather than copied is caught however the alteration
- * reached it.  Where a code is recorded as coming from is the one member no
- * function answers from, and it is checked instead by the "metadata" target of
- * the makefile beside this file, which reads the table the registry is built
- * from and holds the reference the registry publishes to it row for row.
+ * Every member of a definition is copied, so the whole descriptor is altered at
+ * once after the registration and the registry asked again: a member it pointed
+ * at rather than copied is caught however the alteration reached it.  Where a
+ * code is recorded as coming from is the one member no function answers from,
+ * and it is checked by the "metadata" target of the makefile beside this file,
+ * which holds the table the registry is built from and the reference the
+ * registry publishes to it row for row.
  */
 
 static ngx_int_t
@@ -1816,8 +1787,8 @@ ngx_http_status_test_exhaustion(void)
 
 
 /*
- * One built-in row in full: the code is described, it carries the phrase it
- * has always carried or none where nginx sends three digits and a space, and
+ * One built-in row in full: the code is described, it carries the phrase it is
+ * expected to carry or none where nginx sends three digits and a space, and
  * each of the two questions the registry answers from a row's flags is
  * answered as the set that names those codes expects.  This is what a count of
  * the codes described cannot say, and it is what every initialization is
@@ -1907,8 +1878,6 @@ ngx_http_status_test_builtins(void)
         }
     }
 
-    /* and what a module registered for an earlier configuration is gone */
-
     if (ngx_http_status_test_no_row(ngx_http_status_test_absent,
             ngx_http_status_test_nelts(ngx_http_status_test_absent))
         != NGX_OK)
@@ -1926,9 +1895,7 @@ ngx_http_status_test_builtins(void)
  * registry every time however many configurations came before: unsealed,
  * describing every built-in code and no other, with whatever a module
  * registered for the configuration before discarded and the room to register
- * whole again.  The cycle is run more than once because a second run of it is
- * the case a reload is, and the state after each is compared in full with the
- * state initialization is expected to leave rather than counted and let be.
+ * whole again.
  */
 
 static ngx_int_t
@@ -1988,8 +1955,6 @@ ngx_http_status_test_idempotent(void)
         }
     }
 
-    /* and one initialization more leaves the built-in codes alone again */
-
     ngx_http_status_test_assert(rc, ngx_http_status_init(NULL) == NGX_OK,
                                 "the registry failed to initialize a last "
                                 "time");
@@ -2003,21 +1968,33 @@ ngx_http_status_test_idempotent(void)
                           && ngx_http_status_validate(305) == NGX_ERROR,
                           "the registry did not return to its built-in state");
 
-    /*
-     * And the room a configuration has to register in is whole again.  Each
-     * cycle above registered a row, so an initialization that forgot those rows
-     * were gone would leave room for fewer than the headroom documents; how
-     * many registrations are accepted is the one thing such a carrying over
-     * would show as, so the count is asserted and not the state.
-     */
+    if (ngx_http_status_test_headroom_reset() != NGX_OK) {
+        rc = NGX_ERROR;
+    }
+
+    return rc;
+}
+
+
+/*
+ * The room a configuration has to register in is whole again.  How many
+ * registrations are accepted is the one thing a carrying over of the rows an
+ * earlier configuration registered would show as, so the count is asserted and
+ * not the state.
+ */
+
+static ngx_int_t
+ngx_http_status_test_headroom_reset(void)
+{
+    ngx_int_t  rc;
+
+    rc = NGX_OK;
 
     ngx_http_status_test_assert(rc,
                           ngx_http_status_test_fill_headroom()
                           == NGX_HTTP_STATUS_TEST_HEADROOM,
                           "the room a configuration has to register in was not "
                           "whole again after the configurations before it");
-
-    /* and one initialization more discards every one of those in its turn */
 
     ngx_http_status_test_assert(rc, ngx_http_status_init(NULL) == NGX_OK,
                                 "the registry failed to initialize once its "
@@ -2037,14 +2014,10 @@ ngx_http_status_test_idempotent(void)
  * variable is passed to it here and never an expression with a side effect,
  * which is how every caller of it in the tree passes one.
  *
- * The probes are the ones that matter to the one caller that guards on it.  The
- * embedded Perl setter is handed an integer a script chose, that being the only
- * status from outside nginx which reaches a response nginx composes, and it
- * refuses whatever this macro does not answer for: a status below 100, a status
- * of 600 or more, and - a consequence of the same bound rather than a second
- * one - every status too wide for the three bytes an HTTP/2 or an HTTP/3
- * response reserves.  Which of the probes below are answered for is therefore
- * which statuses that setter accepts.
+ * Its bound is what the embedded Perl setter, the one caller that guards on it,
+ * refuses a status a script chose outside of: a status below 100 and a status
+ * of 600 or more, which as a consequence of the same bound is also every status
+ * too wide for the three bytes an HTTP/2 or an HTTP/3 response reserves.
  */
 
 static ngx_int_t
@@ -2178,19 +2151,17 @@ ngx_http_status_test_precedence(void)
 
 
 /*
- * The one entry point for a status nginx chose itself.  It writes the response
- * status and the bit recording that one was chosen, and writes nothing else:
- * not the status line, which a caller supplies verbatim or leaves empty, and
- * not the error status, which is a different status for a different purpose.
+ * The setter writes the response status and the bit recording that one was
+ * chosen, and writes nothing else: not the status line, which a caller supplies
+ * verbatim or leaves empty, and not the error status, which is a different
+ * status for a different purpose.
  *
  * It holds a status to no width, and a status the registry does not describe is
- * refused only by the build configured to look for one; both of those bounds
- * belong to the two groups that follow this one, which assert each of them
- * against the build it is compiled into.
+ * refused only by the build configured to look for one.
  *
  * A status may be set again after the response has been decided, which is what
  * the two places answering for a request being torn down do: they write the
- * status the access log is to record, nothing of a response being sent
+ * status the access log is to record and nothing of a response being sent
  * afterwards.  Both codes that reach them are nginx's own, so the registry
  * describes both and no build refuses either, and either may be written over a
  * response status that was already set.
@@ -2231,8 +2202,6 @@ ngx_http_status_test_set(void)
                           "reported, which the access log depends on being "
                           "allowed");
 
-    /* and the other code a request torn down is logged with */
-
     ngx_http_status_test_assert(rc,
                           ngx_http_status_set(r, NGX_HTTP_CLOSE) == NGX_OK
                           && r->headers_out.status == NGX_HTTP_CLOSE
@@ -2246,12 +2215,10 @@ ngx_http_status_test_set(void)
 
 
 /*
- * One width, on a request of its own.  The setter is asked for a status of the
- * given width and the outcome is required to be the outcome of a status the
- * registry does not describe: stored and unreported where the build carries no
- * switch, refused and reported where it does.  Both widths are checked through
- * here so that neither the strict nor the default expectation has to be written
- * twice.
+ * A status of the given width, on a request of its own.  The outcome required
+ * of the setter is the outcome of a status the registry does not describe:
+ * stored and unreported where the build carries no switch, refused and reported
+ * where it does.
  */
 
 static ngx_int_t
@@ -2291,25 +2258,21 @@ ngx_http_status_test_set_width(ngx_uint_t status, const char *what)
  * three-digit conversion is a minimum and never a limit, so a status of four
  * digits or more cannot be written into the three bytes that the HTTP/2 and
  * HTTP/3 field encoders reserve for it; but an HTTP/1.x status line reserves
- * NGX_INT_T_LEN bytes for the same number and carries any width, and a
- * configuration has always been able to ask for one:
+ * NGX_INT_T_LEN bytes for the same number and carries any width, which a
+ * configuration may ask for:
  *
  *     error_page 404 =1234 /wide;
  *
- * has always been accepted and has always answered "HTTP/1.1 1234 ".  A bound
- * applied where a status is chosen would refuse that in the build without the
- * switch as well, which is the one build whose behaviour must not differ from
- * the behaviour before the registry existed.  The bound therefore belongs to
- * each encoding that has one, and each of the two filters that reserve those
- * three bytes holds its own and refuses a status wider than the bytes it
- * reserved; the one boundary that admits a status from outside nginx altogether
- * holds the range of the registry instead, that range being narrower than any
- * such bound.  None of the three is a question for the setter.
+ * is accepted and answers "HTTP/1.1 1234 ".  A bound applied where a status is
+ * chosen would refuse that in the build without the switch as well, whose
+ * behaviour must not differ.  The bound belongs to each encoding that has one:
+ * each of the two filters that reserve those three bytes holds its own and
+ * refuses a status wider than the bytes it reserved, and the boundary that
+ * admits a status a script chose holds the range of the registry, which is
+ * narrower than any such bound.
  *
- * What is checked here is that the setter itself holds a status to no width in
- * either build: a wide status is treated exactly as any other status the
- * registry does not describe, and so is stored where a status the registry does
- * not describe is stored and refused where one is refused.
+ * The setter itself holds a status to no width in either build: a wide status
+ * is treated exactly as any other status the registry does not describe.
  */
 
 static ngx_int_t
@@ -2341,12 +2304,10 @@ ngx_http_status_test_set_bounds(void)
 
 /*
  * A status the registry merely does not describe is by contrast perfectly
- * sendable, and the build without the switch sends it: what a response carries
- * there is what a response has always carried, which is the one thing that
- * build must not do differently.  The build with the switch is the build that
- * refuses it, that being what asking for the switch asks for, and the
- * difference between the two is asserted against each of them rather than left
- * to be found out.
+ * sendable: the build without the switch stores it and sends it, and the build
+ * with the switch refuses it, that being what asking for the switch asks for.
+ * The difference is asserted against each build rather than left to be found
+ * out.
  */
 
 static ngx_int_t
@@ -2389,19 +2350,15 @@ ngx_http_status_test_set_undescribed(void)
 /*
  * Moving the error status of a request over its response status, which is what
  * ngx_http_send_header() does last of all before the filters run and which is
- * therefore the last status any response carries.  The move is made with the
- * setter, there being one way for nginx to choose a status and no second one
- * beside it: the core hands the setter the error status it has just found on
- * the request, and clears the status line itself where the setter answered
- * NGX_OK, so that the moved status is not sent with the phrase of the status it
- * replaced.
+ * therefore the last status any response carries.  The core hands the setter
+ * the error status it has just found on the request, and clears the status line
+ * itself where the setter answered NGX_OK, so that the moved status is not sent
+ * with the phrase of the status it replaced.
  *
- * What is asked of the move here is that the setter writes the response status
- * and the record on the request and writes nothing else -- in particular that
- * the error status it was taken from is left where it was, the access log
- * reading that member rather than the response status, and that the status line
- * is left for the caller to clear -- and that a described status is moved
- * without a word.
+ * The setter writes the response status and the record on the request and
+ * writes nothing else: the error status it was taken from is left where it was,
+ * the access log reading that member rather than the response status, and the
+ * status line is left for the caller to clear.
  */
 
 static ngx_int_t
@@ -2428,15 +2385,29 @@ ngx_http_status_test_promote(void)
                           "moving an error status over a response status did "
                           "not make exactly the two stores the setter makes");
 
-    /*
-     * And an error status the registry does not describe, which a configuration
-     * has always been able to name.  The build without the switch moves it, a
-     * response carrying it being what a response has always carried; the build
-     * with the switch refuses it, leaves the response status as it found it,
-     * and reports it, so that the core answers NGX_ERROR to whoever asked for
-     * the header rather than sending a status that build was configured to
-     * refuse.
-     */
+    if (ngx_http_status_test_promote_undescribed() != NGX_OK) {
+        rc = NGX_ERROR;
+    }
+
+    return rc;
+}
+
+
+/*
+ * And an error status the registry does not describe, which a configuration may
+ * name.  The build without the switch moves it; the build with the switch
+ * refuses it, leaves the response status as it found it, and reports it, so
+ * that the core answers NGX_ERROR to whoever asked for the header rather than
+ * sending a status that build was configured to refuse.
+ */
+
+static ngx_int_t
+ngx_http_status_test_promote_undescribed(void)
+{
+    ngx_int_t            rc;
+    ngx_http_request_t  *r;
+
+    rc = NGX_OK;
 
     r = ngx_http_status_test_req();
     r->headers_out.status = NGX_HTTP_OK;
@@ -2474,13 +2445,11 @@ ngx_http_status_test_promote(void)
 
 /*
  * The setter on a request that is relaying a response an upstream answered.
- * Which statuses such a request may be given is a question only a build
- * configured to examine them asks, and it is asked of that build below; what is
- * asked here, of both builds alike, is that the two stores the setter makes are
- * the same stores whether or not a request has an upstream and that it writes
- * nothing besides them.  The status an upstream chose reaches the response by
- * being stored directly and never through the setter, which is why relaying one
- * the registry does not describe is silent in every build.
+ * The two stores it makes are the same stores whether or not a request has an
+ * upstream, and it writes nothing besides them.  The status an upstream chose
+ * reaches the response by being stored directly and never through the setter,
+ * which is why relaying one the registry does not describe is silent in every
+ * build.
  */
 
 static ngx_int_t
@@ -2512,8 +2481,6 @@ ngx_http_status_test_relayed(void)
                           "wrote more than the response status and the bit "
                           "recording it");
 
-    /* while the status the upstream chose is stored directly, being relayed */
-
     r->headers_out.status = r->upstream->headers_in.status_n;
 
     ngx_http_status_test_assert(rc,
@@ -2532,16 +2499,10 @@ ngx_http_status_test_relayed(void)
 /*
  * Reporting exists only in a build configured with
  * --with-http_status_validation, so these checks are compiled into that build
- * alone.  A real connection and a real log are wired to the request and the
- * log is given a writer, which is the hook nginx's own logging offers, so that
- * the alerts a check produced are counted rather than inferred.  The alerts
- * these checks write out are the reporting working and not a failure of it.
- *
- * What is asserted is the policy: a status the registry describes is not
- * reported, one it does not describe is, the status an upstream chose is exempt
- * where the exemption applies, and every status that is objected to is written
- * to the log where it is objected to, no record kept on the request making a
- * later objection silent.
+ * alone.  The log is given a writer, which is the hook nginx's own logging
+ * offers, so that the alerts a check produced are counted rather than inferred;
+ * the alerts these checks write out are the reporting working and not a failure
+ * of it.
  */
 
 static ngx_int_t
@@ -2552,8 +2513,6 @@ ngx_http_status_test_report(void)
 
     rc = NGX_OK;
 
-    /* a status the registry describes has no line written for it */
-
     r = ngx_http_status_test_req();
 
     ngx_http_status_test_gate(r, NGX_HTTP_OK);
@@ -2562,8 +2521,6 @@ ngx_http_status_test_report(void)
                                 "a status the registry describes was reported "
                                 "by a gate that examines one");
 
-    /* and one it does not describe has one line written for it */
-
     r = ngx_http_status_test_req();
 
     ngx_http_status_test_gate(r, 306);
@@ -2571,8 +2528,6 @@ ngx_http_status_test_report(void)
     ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 1,
                                 "a status the registry does not describe was "
                                 "not reported exactly once");
-
-    /* and a second such status on that same request has one of its own */
 
     ngx_http_status_test_gate(r, 305);
 
@@ -2586,14 +2541,12 @@ ngx_http_status_test_report(void)
 
 
 /*
- * What the last report said, for one status.  A report is one line, written at
- * one severity, carrying one message, and a check that counts lines alone would
- * pass a line written at the wrong severity or naming the wrong status.  All
- * three are asserted here instead: the count, the severity exactly, and the
- * message the registry writes exactly.  The message is compared as the tail of
- * the formatted line before the linefeed, what precedes it being the time, the
- * severity, the process and the connection, none of which belongs to the
- * registry.
+ * What the last report said, for one status: the count of lines, the severity
+ * exactly, and the message exactly, a check that counts lines alone passing a
+ * line written at the wrong severity or naming the wrong status.  The message
+ * is compared as the tail of the formatted line before the linefeed, what
+ * precedes it being the time, the severity, the process and the connection,
+ * none of which belongs to the registry.
  */
 
 static ngx_int_t
@@ -2634,12 +2587,10 @@ ngx_http_status_test_reported(ngx_uint_t status, const char *what)
 
 
 /*
- * The bytes of a report, for a status of every width one can have: the message
+ * The bytes of a report, for a status of every width one can have.  The message
  * names the status it was raised for, so a report of the wrong status, or of
- * the right status at the wrong severity, is caught here rather than counted as
- * a report of the right one.  The setter is what raises each of them, which is
- * the production path, and a status the registry describes is then asked for to
- * show that nothing is written for one.
+ * the right status at the wrong severity, is caught rather than counted as a
+ * report of the right one.
  */
 
 static ngx_int_t
@@ -2750,8 +2701,6 @@ ngx_http_status_test_report_exempts(void)
                                 "the status an upstream chose was reported, "
                                 "which relaying a response must not be");
 
-    /* including one below the range the registry describes at all */
-
     r = ngx_http_status_test_req();
     r->upstream = &ngx_http_status_test_u;
     r->upstream->headers_in.status_n = 42;
@@ -2762,8 +2711,6 @@ ngx_http_status_test_report_exempts(void)
                                 "a status an upstream chose below 100 was "
                                 "reported");
 
-    /* while a request nginx answered itself is not exempt */
-
     r = ngx_http_status_test_req();
 
     ngx_http_status_test_gate(r, 306);
@@ -2772,12 +2719,28 @@ ngx_http_status_test_report_exempts(void)
                                 "a status nginx chose for a request it "
                                 "answered itself was exempted");
 
-    /*
-     * And the gate an "error_page" directive reaches, which exempts nothing: a
-     * configuration chose that status whatever the origin of the response it
-     * replaces, so it is examined even where an upstream answered the request
-     * and even where it names the very number the upstream chose.
-     */
+    if (ngx_http_status_test_report_overwrites() != NGX_OK) {
+        rc = NGX_ERROR;
+    }
+
+    return rc;
+}
+
+
+/*
+ * And the gate an "error_page" directive reaches, which exempts nothing: a
+ * configuration chose that status whatever the origin of the response it
+ * replaces, so it is examined even where an upstream answered the request and
+ * even where it names the very number the upstream chose.
+ */
+
+static ngx_int_t
+ngx_http_status_test_report_overwrites(void)
+{
+    ngx_int_t            rc;
+    ngx_http_request_t  *r;
+
+    rc = NGX_OK;
 
     r = ngx_http_status_test_req();
     r->upstream = &ngx_http_status_test_u;
@@ -2789,8 +2752,6 @@ ngx_http_status_test_report_exempts(void)
                                 "a status an error_page directive chose was "
                                 "exempted because an upstream had chosen the "
                                 "same number for the same request");
-
-    /* while the form of it that carries no status has none to examine */
 
     ngx_http_status_test_overwrite(r, 0);
 
@@ -2804,19 +2765,15 @@ ngx_http_status_test_report_exempts(void)
 
 
 /*
- * The setter reports through that same policy and then refuses, it being the
- * one of the three points where a status is chosen that has a caller with a
- * result to act on: the caller's own error handling runs, answering the request
- * as it answers any other failure, and the status the request already carried
+ * The setter reports and then refuses, it being the one of the three points
+ * where a status is chosen that has a caller with a result to act on: the
+ * caller's own error handling runs, and the status the request already carried
  * is left as it was rather than replaced by one this build was configured to
  * object to.
  *
  * Every call is examined and every refusal is reported, whatever has happened
- * to the request before it: a second status the registry does not describe is
- * refused as the first was and written to the log as the first was.  Nothing
- * the request accumulated grants a status or silences a report: a build in
- * which something did would, from the second call onward, either send exactly
- * what it was configured to object to or refuse it without a word.
+ * to the request before it: nothing the request accumulated grants a status or
+ * silences a report.
  */
 
 static ngx_int_t
@@ -2885,11 +2842,6 @@ ngx_http_status_test_set_wide_reports(void)
                           "a status of four digits was not reported exactly "
                           "once as a status the registry does not describe");
 
-    /*
-     * And a second status on the same request is refused as the first was and
-     * reported as the first was.
-     */
-
     ngx_http_status_test_assert(rc,
                           ngx_http_status_set(r, 10000) == NGX_ERROR
                           && r->headers_out.status == 0
@@ -2931,8 +2883,6 @@ ngx_http_status_test_set_relayed(void)
                           "the setter refused or reported a status on a "
                           "request being answered from an upstream");
 
-    /* including one below the range the registry describes at all */
-
     r = ngx_http_status_test_req();
     r->upstream = &ngx_http_status_test_u;
     r->upstream->headers_in.status_n = 42;
@@ -2943,8 +2893,6 @@ ngx_http_status_test_set_relayed(void)
                           && ngx_http_status_test_alerts == 0,
                           "the setter refused or reported a status below 100 "
                           "on a request being answered from an upstream");
-
-    /* while a request nginx answered itself is examined */
 
     r = ngx_http_status_test_req();
 
@@ -2962,16 +2910,13 @@ ngx_http_status_test_set_relayed(void)
 /*
  * The two gates and the setter composed on one request, which is the sequence a
  * relayed response that a configuration then answers for itself takes.  The
- * gate of ngx_http_special_response_handler() and the setter are both scoped to
- * the origin of the response and both exempt such a request.  The gate of
- * ngx_http_send_error_page() is not scoped that way and reports whatever it is
- * handed, because a status an "error_page" directive chose was chosen by a
- * configuration whatever the origin of the response it replaces: an
- * "error_page 599 =599 /uri" for an upstream that answered 599 leaves the
- * upstream having chosen one 599 and the configuration another, and only the
- * first of them is exempt.  Each of the three writes its own line where it
- * objects, so a request that passes through all three is reported for as many
- * times as it handed one of them a status to object to.
+ * gate of ngx_http_special_response_handler() and the setter are scoped to the
+ * origin of the response and exempt such a request; the gate of
+ * ngx_http_send_error_page() is not, a status an "error_page" directive chose
+ * having been chosen by a configuration whatever the origin of the response it
+ * replaces.  An "error_page 599 =599 /uri" for an upstream that answered 599
+ * leaves the upstream having chosen one 599 and the configuration another, and
+ * only the first of them is exempt.
  */
 
 static ngx_int_t
@@ -2996,16 +2941,12 @@ ngx_http_status_test_set_mixed(void)
                           "gate that exempts it or by the setter that exempts "
                           "it");
 
-    /* and the gate an "error_page" of the configuration reaches */
-
     ngx_http_status_test_overwrite(r, 599);
 
     ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 1,
                                 "a status a configuration chose was exempted "
                                 "because an upstream had chosen the same "
                                 "number for the same request");
-
-    /* and a second status of that configuration is reported in its turn */
 
     ngx_http_status_test_overwrite(r, 306);
 
@@ -3022,22 +2963,15 @@ ngx_http_status_test_set_mixed(void)
  * The gate and the move composed on one request, which is the sequence a
  * response that has already gone wrong takes.  The gate of
  * ngx_http_special_response_handler() reports a status the registry does not
- * describe and then deliberately lets it stand, having no caller of its own to
- * answer a refusal to, so the response that gate exists to produce is the
- * response the request has there.  ngx_http_send_header() then hands that
- * status to the setter, which does have a caller with a result to act on: this
- * build refuses it, reports it in its turn, and leaves the response status as
- * it found it, so the request is answered as any other failure of send_header
- * is answered rather than by sending a status this build was configured to
- * object to.  The build without the switch sends it, that build's behaviour
- * being the behaviour before the registry existed and the one behaviour that
- * must not differ.
+ * describe and lets it stand, having no caller of its own to answer a refusal
+ * to.  ngx_http_send_header() then hands that same status to the setter, which
+ * does have such a caller: this build refuses it, reports it in its turn, and
+ * leaves the response status as it found it, so the request is answered as any
+ * other failure of send_header is answered.  The build without the switch sends
+ * it.
  *
- * And the setter, asked for another such status on that same request, refuses
- * it still and reports it still.  Nothing the request accumulated grants a
- * status or silences a line, which is the one thing this group is here to
- * hold: a build in which something did would, from the second call onward,
- * send exactly what it was configured to object to.
+ * A second such status on that same request is refused still and reported
+ * still: nothing the request accumulated grants a status or silences a line.
  */
 
 static ngx_int_t
@@ -3086,8 +3020,6 @@ ngx_http_status_test_gated_promotion(void)
 
 
 static ngx_http_status_test_case_t  ngx_http_status_test_cases[] = {
-
-    /* this one runs before anything initializes the registry */
 
     { ngx_http_status_test_preinit, "the state before initialization", 0 },
 
@@ -3210,21 +3142,19 @@ ngx_http_status_test_run(void)
 /*
  * What src/core/nginx.c defines besides the main() this file replaces.
  *
- * The makefile beside this file leaves out exactly one object, the object of
- * src/core/nginx.c, because that is the one object of the tree that defines
- * main().  It defines four other things as well: the core module, which is
- * the first entry of the generated ngx_modules[], and the three functions of
- * src/core/ngx_cycle.h that live with it, which the cycle, the process and
- * the upstream code call.  Leaving that object out therefore leaves those
- * four undefined, so they are defined here: replacing a main() means taking
- * over the rest of its file as well.
+ * The makefile beside this file leaves out exactly one object, that of
+ * src/core/nginx.c, because it is the one object of the tree that defines
+ * main().  It defines four other things as well: the core module, which is the
+ * first entry of the generated ngx_modules[], and the three functions of
+ * src/core/ngx_cycle.h that live with it, which the cycle, the process and the
+ * upstream code call.  Leaving that object out leaves those four undefined, so
+ * they are defined here.
  *
- * The core module is one of no directives and no context callbacks, which is
- * all that is wanted of it: nothing here runs a cycle, so nothing reads
- * either, and only the address of the module is ever needed.  The three
- * functions belong to starting, reloading and binding worker processes, none
- * of which a run of these tests reaches, so each reports and stops rather
- * than answer with something a caller would go on to trust.
+ * The core module needs no directives and no context callbacks, nothing here
+ * running a cycle.  The three functions belong to starting, reloading and
+ * binding worker processes, none of which a run of these tests reaches, so each
+ * reports and stops rather than answer with something a caller would go on to
+ * trust.
  */
 
 static ngx_core_module_t  ngx_http_status_test_core_ctx = {

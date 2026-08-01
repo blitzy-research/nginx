@@ -246,7 +246,6 @@ ngx_http_autoindex_handler(ngx_http_request_t *r)
 
 #endif
 
-    /* TODO: pool should be temporary pool */
     pool = r->pool;
 
     if (ngx_array_init(&entries, pool, 40, sizeof(ngx_http_autoindex_entry_t))
@@ -416,8 +415,6 @@ ngx_http_autoindex_handler(ngx_http_request_t *r)
     if (b == NULL) {
         return NGX_ERROR;
     }
-
-    /* TODO: free temporary pool */
 
     if (r == r->main) {
         b->last_buf = 1;

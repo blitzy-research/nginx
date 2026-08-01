@@ -118,15 +118,19 @@ status(r, code)
     code = SvIV(ST(1));
 
     /*
-     * The code is whatever integer a Perl script passed, so this is the one
-     * status in nginx that is neither written by the source that chose it nor
-     * bounded to three digits as it is parsed from a response.  It is held here
-     * to the range a status code is written in, which refuses a negative one
-     * before it becomes a very large unsigned one on conversion, and refuses
-     * one too wide for the three digit ":status" field of an HTTP/2 or an
-     * HTTP/3 response: this is the producer of that value, and the only place
-     * a status enters nginx from outside it, so it is where such a value is
-     * stopped rather than at each encoder that would have to write it.
+     * This is the boundary at which a script chooses the status of a response
+     * that nginx itself authors: the value is whatever integer the script
+     * passed, so unlike the status of an upstream response, which also reaches
+     * nginx from outside but is bounded to three digits by the parser that
+     * reads it and is relayed rather than chosen, this one arrives with no
+     * bound at all.  It is held here to the range a status code is written in,
+     * which refuses a negative one before it becomes a very large unsigned one
+     * on conversion, and one too wide for the three digit ":status" field of an
+     * HTTP/2 or an HTTP/3 response.  Holding the producer to that range keeps
+     * such a value from reaching an encoder rather than being caught inside
+     * one; it does not stand in for the bounds an encoder keeps for itself,
+     * which the HTTP/2 and HTTP/3 filters hold whatever wrote the status they
+     * are given.
      *
      * The bound is that range and nothing narrower: a script may name a status
      * the registry does not describe, 418 among them, exactly as an error_page

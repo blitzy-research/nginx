@@ -1848,8 +1848,12 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
 /*
  * The error status of a request is moved into the response here, over the
  * response status, and this is the last point a response passes through on its
- * way to the filter chain that emits it.  The move is made with the one API
- * that writes a response status, so that no write of one stands outside it.
+ * way to the filter chain that emits it.  The status being moved is one nginx
+ * or a configuration of it chose, so the move is made with
+ * ngx_http_status_set().  The two stores that stand outside that function stay
+ * as they are: the status an upstream authored, which ngx_http_upstream.c
+ * copies across directly, and the status the embedded Perl module falls back
+ * to.
  *
  * The status being moved was examined where it was chosen, by the gate in
  * ngx_http_special_response_handler() or by ngx_http_send_error_page(), and
@@ -1859,7 +1863,7 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
  * instead, where there is a caller to answer: the response is not sent, and the
  * request is finalized as it is for any other failure of this function.  A
  * build without the switch stores the status and answers NGX_OK, as it does for
- * every status, so what such a build sends is unchanged.
+ * every status.
  *
  * The status line is cleared after the store and not by it, the setter not
  * touching the status line, so that the moved status is not sent under the
@@ -3588,7 +3592,12 @@ ngx_http_core_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_str_t                name;
     ngx_http_server_name_t  *sn;
 
-    /* TODO: it does not merge, it inits only */
+    /*
+     * The values above are merged from the enclosing configuration, while the
+     * server names below are initialized only: the names of a server block
+     * belong to that block alone and are deliberately not inherited from the
+     * configuration that encloses it.
+     */
 
     ngx_conf_merge_size_value(conf->connection_pool_size,
                               prev->connection_pool_size, 64 * sizeof(void *));

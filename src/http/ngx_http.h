@@ -161,12 +161,19 @@ void ngx_http_clean_header(ngx_http_request_t *r);
 
 
 /*
- * The API of the HTTP status code registry: the first sets a status a module
- * chose, and is the one way to choose one, while the other four answer about
- * a status code and change nothing.  The record a definition is written as,
- * the flags one carries and the macros over a status code are in
- * ngx_http_status.h, along with the functions the HTTP core and two of its
- * modules use that are not part of this API.
+ * The API of the HTTP status code registry.  ngx_http_status_set() writes a
+ * response status that nginx or a module chose, and is what a module calls to
+ * choose one; two stores of a response status stand outside it by design, the
+ * status an upstream authored and the status the embedded Perl module falls
+ * back to for a script that set none.  ngx_http_status_validate(),
+ * ngx_http_status_reason() and ngx_http_status_is_cacheable() answer about a
+ * status code and write nothing.  ngx_http_status_register() adds a definition
+ * to the registry and so writes to it, which is why it is admitted only while
+ * a configuration is being parsed.
+ *
+ * The record a definition is written as, the flags one carries and the macros
+ * over a status code are in ngx_http_status.h, along with the functions the
+ * HTTP core and two of its modules use that are not part of this API.
  */
 
 ngx_int_t ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status);

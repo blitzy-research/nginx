@@ -11,7 +11,6 @@
 
 #include <ngx_config.h>
 #include <ngx_core.h>
-#include <ngx_http.h>
 
 
 /*
@@ -62,6 +61,19 @@ typedef struct {
 
 #define ngx_http_status_in_range(s)                                          \
     ((s) >= NGX_HTTP_STATUS_MIN && (s) < NGX_HTTP_STATUS_MAX)
+
+
+/*
+ * The aggregator is included after the record above and before the prototypes
+ * below, and not with the two headers at the top of this file, so that this
+ * header may be included on its own: ngx_http.h includes this one in turn and
+ * declares ngx_http_status_register() with the record type, which has to be
+ * complete by then, and ngx_http_status_effective() below is declared with the
+ * request type, which the aggregator brings.  Include ngx_http.h, as every HTTP
+ * source already does, rather than this header on its own.
+ */
+
+#include <ngx_http.h>
 
 
 /*

@@ -50,13 +50,13 @@ with it.
 It is deliberately not held where a status is chosen, so nothing about adopting
 this API narrows what a call site may ask for. An HTTP/1.x status line reserves
 `NGX_INT_T_LEN` bytes for the same number and carries any width, and a
-configuration has always been able to ask for one: `error_page 404 =1234 /wide;`
-is accepted and answers `HTTP/1.1 1234 `. Nothing nginx chooses for itself comes
-near that width in any case. [The range](#range) names that macro and
-[HTTP/2 and HTTP/3](#http2-and-http3) says what each of the two encoders holds
-and does, while
-[converting direct assignments](#6-converting-direct-assignments) says what a
-caller does with a result.
+configuration has always been able to ask for one: `error_page 404 =1234
+/wide;` is accepted and, in a build without the validation switch, answers
+`HTTP/1.1 1234 `. Nothing nginx chooses for itself comes near that width in any
+case. [The range](#range) names that macro and [HTTP/2 and
+HTTP/3](#http2-and-http3) says what each of the two encoders holds and does,
+while [converting direct assignments](#6-converting-direct-assignments) says
+what a caller does with a result.
 
 What a module gains by adopting the API is one place at which a status is set,
 and metadata it would otherwise keep a copy of: the wire reason phrase of a
@@ -302,8 +302,8 @@ ngx_uint_t ngx_http_status_expires_ok(ngx_uint_t status);
 They are declared there rather than beside the five because they are not part of
 the API a module writes against, and keeping the two surfaces in two files is
 what lets each be read for what it is. `src/http/ngx_http_status.h` includes
-`<ngx_http.h>`, which is where `ngx_conf_t` and `ngx_http_request_t` arrive
-from, so the first three are declared with the types they take; and
+`<ngx_http.h>`, which is where `ngx_http_request_t` arrives from, so
+`ngx_http_status_effective()` is declared with the request type it takes; and
 `<ngx_http.h>` includes `src/http/ngx_http_status.h` in turn, which is how a
 module that includes only the aggregator reaches the record type, the flags and
 the range. Include the aggregator, as every HTTP source already does, rather
@@ -336,8 +336,9 @@ silent hole. A module has nothing to convert there and nothing to call.
 
 ```text
 core preconfiguration          ngx_http_status_init(cf)
-  |                              unseals, clears the index, and rebuilds
-  |                              the built-in rows from the built-in table
+  |                              unseals, clears any registered rows and the
+  |                              whole index, derives the index over the
+  |                              built-in rows
   |  module preconfiguration   <-- ngx_http_status_register() is accepted here
   |  configuration parsing     <-- and here
   v
@@ -560,8 +561,8 @@ executing after a failure: a status the setter refused is one the response
 cannot or should not carry, and the enclosing function has to stop.
 
 A compile-time constant and a value computed at run time are converted exactly
-the same way: both go through `ngx_http_status_set()`, and there is no second
-entry point for either.
+the same way: both go through `ngx_http_status_set()`, and neither has a form of
+its own.
 
 ### Adapting to the shape of the enclosing function
 
@@ -657,12 +658,11 @@ and passed over: `ngx_http_send_header()` answers `NGX_ERROR`, which its callers
 already handle as they handle any other failure of that function, and the
 response is not sent.
 
-**There is no seam beside the setter** — no second entry point that writes a
-response status without examining it, and none to be added. That is what lets
-the setter refuse *every* unregistered status it is given, whatever the request
-has been given before it. A path that stood aside for a request whose status had
-already been reported would, from the second call onward, send exactly what a
-strict build was configured to object to.
+**Nothing a request has accumulated stands aside for it.** The setter refuses
+*every* unregistered status it is given, whatever the request was given before
+it, and no path is to be added that would relax that. A path which stood aside
+for a request whose status had already been reported would, from the second call
+onward, send exactly what a strict build was configured to object to.
 
 So what a strict build does with a status one of [the two
 gates](#statuses-a-handler-returns) reported and let stand is refuse it here and

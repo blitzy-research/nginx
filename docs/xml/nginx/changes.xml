@@ -28352,23 +28352,6 @@ the FastCGI parameters with the empty values now are passed to a server.
 </para>
 </change>
 
-<!--
-
-<change type="bugfix">
-<para lang="ru">
-при ошибках в работе с проксированным сервером или FastCGI сервером
-мог произойти segmentation fault;
-в режиме прокси ошибка появилась в 0.1.29.
-</para>
-<para lang="en">
-the segmentation fault may occurred if there were errors while
-working with proxied or FastCGI server;
-in the proxied mode the bug had appeared in 0.1.29.
-</para>
-</change>
-
--->
-
 <change type="bugfix">
 <para lang="ru">
 если в ответе проксированного сервера или FastCGI сервера была строка

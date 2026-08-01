@@ -884,8 +884,6 @@ ngx_http_upstream_cache(ngx_http_request_t *r, ngx_http_upstream_t *u)
             return NGX_ERROR;
         }
 
-        /* TODO: add keys */
-
         ngx_http_file_cache_create_key(r);
 
         if (r->cache->header_start + 256 > u->conf->buffer_size) {
@@ -1089,8 +1087,6 @@ ngx_http_upstream_cache_send(ngx_http_request_t *r, ngx_http_upstream_t *u)
         return ngx_http_cache_send(r);
     }
 
-    /* TODO: cache stack */
-
     u->buffer = *c->buf;
     u->buffer.pos += c->header_start;
 
@@ -1136,8 +1132,6 @@ ngx_http_upstream_cache_send(ngx_http_request_t *r, ngx_http_upstream_t *u)
     ngx_log_error(NGX_LOG_CRIT, r->connection->log, 0,
                   "cache file \"%s\" contains invalid header",
                   c->file.name.data);
-
-    /* TODO: delete file */
 
     return rc;
 }
@@ -3374,8 +3368,6 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
         return;
     }
 
-    /* TODO: preallocate event_pipe bufs, look "Content-Length" */
-
 #if (NGX_HTTP_CACHE)
 
     if (r->cache && r->cache->file.fd != NGX_INVALID_FILE) {
@@ -3552,7 +3544,6 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
         p->single_buf = 1;
     }
 
-    /* TODO: p->free_bufs = 0 if use ngx_create_chain_of_bufs() */
     p->free_bufs = 1;
 
     /*
@@ -3604,8 +3595,6 @@ ngx_http_upstream_upgrade(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
     c = r->connection;
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
-
-    /* TODO: prevent upgrade if not requested or not possible */
 
     if (r != r->main) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0,
@@ -4611,7 +4600,6 @@ ngx_http_upstream_next(ngx_http_request_t *r, ngx_http_upstream_t *u,
     }
 
     if (u->peer.cached && ft_type == NGX_HTTP_UPSTREAM_FT_ERROR) {
-        /* TODO: inform balancer instead */
         u->peer.tries++;
     }
 
@@ -4791,8 +4779,6 @@ ngx_http_upstream_finalize_request(ngx_http_request_t *r,
     if (u->peer.connection) {
 
 #if (NGX_HTTP_SSL)
-
-        /* TODO: do not shutdown persistent connection */
 
         if (u->peer.connection->ssl) {
 

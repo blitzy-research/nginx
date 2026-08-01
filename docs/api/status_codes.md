@@ -236,7 +236,6 @@ line, so the header filter emits a status line with a single copy:
 ```c
 b->last = ngx_cpymem(b->last, "HTTP/1.1 ", sizeof("HTTP/1.x ") - 1);
 
-/* status line */
 if (status_line) {
     b->last = ngx_copy(b->last, status_line->data, status_line->len);
 
@@ -556,17 +555,19 @@ How many there are is deliberately private to `src/http/ngx_http_status.c`: a
 caller learns the headroom is used up from `ngx_http_status_register()`
 answering `NGX_ERROR`, and not by consulting a number.
 
-Both arrays are rebuilt, in full and from the same built-in table, by every
-`ngx_http_status_init()` — which is to say for every configuration parsed,
-including each reload and each `nginx -t`. What a configuration registered is
-discarded with it, the headroom is whole again, and the registry is open to
-registration once more; nothing carries over from the configuration before, and
-nothing about the state left behind depends on how many configurations came
-before it. A worker only ever reads the arrays, whichever configuration it was
-forked for, so no page of either is copied on write and a worker's private
-memory does not grow on their account. The only per-request cost is the single
-bit of bookkeeping the registry keeps on `ngx_http_request_t`, which occupies
-padding the compiler had already allocated.
+Both arrays are returned to their built state by every `ngx_http_status_init()`
+— the rows a registration appended are cleared, and the whole of the lookup
+index is zeroed and then derived again over the built-in rows — which is to say
+for every configuration parsed, including each reload and each `nginx -t`. What
+a configuration registered is discarded with it, the headroom is whole again,
+and the registry is open to registration once more; nothing carries over from
+the configuration before, and nothing about the state left behind depends on
+how many configurations came before it. A worker only ever reads the arrays,
+whichever configuration it was forked for, so no page of either is copied on
+write and a worker's private memory does not grow on their account. The only
+per-request cost is the single bit of bookkeeping the registry keeps on
+`ngx_http_request_t`, which occupies padding the compiler had already
+allocated.
 
 ### Querying the registry
 
@@ -644,8 +645,7 @@ are not a status being chosen for a response:
 - **the move that finishes a response.** `ngx_http_send_header()` moves the
   error status of a request over its response status, last of all before the
   filters run, and it makes that move by handing the error status to the setter
-  and clearing the status line where the setter accepted it. There is no second
-  way to write a response status and no seam beside the setter.
+  and clearing the status line where the setter accepted it.
 - **the teardown paths.** `ngx_http_terminate_request()` and
   `ngx_http_free_request()` each write a status under their own guard, purely so
   that the access log is given the status the request ended with — a code such

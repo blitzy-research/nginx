@@ -349,12 +349,9 @@ static char ngx_http_error_507_page[] =
  * NGX_HTTP_INSUFFICIENT_STORAGE.
  *
  * This is the one place that shape is written down, and it is written here
- * because the table is here.  The four offsets into this table that were
- * maintained by hand beside its rows are gone, and with them a name they shared
- * with the offsets of the reason phrase table while holding a different number:
- * only the six bounds are written out, every row a span starts at is derived
- * from them, and the number of rows the table holds is derived from them as
- * well and held to the rows written out below.
+ * because the table is here.  Only the six bounds are written out: the row each
+ * span starts at is derived from them, and so is the number of rows the table
+ * holds, which the assertion after the rows below holds the table itself to.
  */
 
 #define NGX_HTTP_ERROR_PAGE_3XX_FIRST   301
@@ -398,7 +395,7 @@ static ngx_str_t ngx_http_error_pages[] = {
 
     ngx_null_string,                     /* 201, 204 */
 
-    /* ngx_null_string, */               /* 300 */
+    /* 300 has no row */
     ngx_string(ngx_http_error_301_page),
     ngx_string(ngx_http_error_302_page),
     ngx_string(ngx_http_error_303_page),
@@ -518,9 +515,11 @@ ngx_http_error_page_index(ngx_uint_t status)
  * checked here rather than at each of the many places that produce one:
  * ngx_http_finalize_request() routes here the statuses a handler returned and
  * ngx_http_filter_finalize_request() those a filter chose part way through a
- * response, so the two paths converge on this one point.  A status is reported
- * here, where it was chosen, and not again where it is later promoted over the
- * response status.
+ * response, so the two paths converge on this one point.  This gate reports a
+ * status and refuses none, having no caller with a result to act on; the status
+ * reaches ngx_http_status_set() later, where ngx_http_send_header() moves the
+ * error status of the request into the response, and is reported and refused
+ * there in its turn.
  *
  * The exemption is scoped to the origin of the response and not to the call
  * site: the status an upstream chose is relayed faithfully, and it reaches this

@@ -584,17 +584,18 @@ struct ngx_http_request_s {
      *
      * it grants a status nothing.  Every status ngx_http_status_set() is given
      * is examined, whatever has been written for the request already, and this
-     * is read where a status is set again after the response was decided, which
-     * is legitimate and is noted rather than refused
+     * bit is read only where a status is set again after the response was
+     * decided, which is legitimate and is noted for debugging rather than
+     * refused
      *
-     * it is added unconditionally, and not only in a build configured with
-     * --with-http_status_validation, so that the layout of this structure
-     * never depends on a build option; and it is added at the end of this
-     * bit field run, where the compiler had padding left before the aligned
-     * member that follows, so that the storage unit and the bit position of
-     * every member above is unchanged.  The size of the structure alone does
-     * not prove that, because inserting a bit anywhere else leaves the size
-     * and the module signature unchanged while moving every bit that follows it
+     * the bit is unconditional, and not confined to a build configured with
+     * --with-http_status_validation, so that the layout of this structure does
+     * not depend on a build option; and it is the last bit of this bit field
+     * run, occupying padding that precedes the aligned member below, so that
+     * the storage unit and the bit position of every member above it are the
+     * ones they would be without it.  The size of the structure alone does not
+     * establish that, a bit inserted anywhere else leaving the size and the
+     * module signature alike while moving every bit that follows it
      */
 
     unsigned                          status_final:1;

@@ -3401,7 +3401,6 @@ ngx_http_mp4_read_stsz_atom(ngx_http_mp4_file_t *mp4, uint64_t atom_data_size)
 
     } else {
         /* if size != 0 then all samples are the same size */
-        /* TODO : chunk samples */
         atom_size = sizeof(ngx_mp4_atom_header_t) + (size_t) atom_data_size;
         ngx_mp4_set_32value(atom_header, atom_size);
         trak->size += atom_size;

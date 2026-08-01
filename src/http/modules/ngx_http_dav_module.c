@@ -424,8 +424,6 @@ ngx_http_dav_delete_path(ngx_http_request_t *r, ngx_str_t *path, ngx_uint_t dir)
         tree.alloc = 0;
         tree.log = r->connection->log;
 
-        /* TODO: 207 */
-
         if (ngx_walk_tree(&tree, path) != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
@@ -457,9 +455,6 @@ ngx_http_dav_delete_dir(ngx_tree_ctx_t *ctx, ngx_str_t *path)
                    "http delete dir: \"%s\"", path->data);
 
     if (ngx_delete_dir(path->data) == NGX_FILE_ERROR) {
-
-        /* TODO: add to 207 */
-
         (void) ngx_http_dav_error(ctx->log, ngx_errno, 0, ngx_delete_dir_n,
                                   path->data);
     }
@@ -475,9 +470,6 @@ ngx_http_dav_delete_file(ngx_tree_ctx_t *ctx, ngx_str_t *path)
                    "http delete file: \"%s\"", path->data);
 
     if (ngx_delete_file(path->data) == NGX_FILE_ERROR) {
-
-        /* TODO: add to 207 */
-
         (void) ngx_http_dav_error(ctx->log, ngx_errno, 0, ngx_delete_file_n,
                                   path->data);
     }

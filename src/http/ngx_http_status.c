@@ -25,15 +25,15 @@ static ngx_http_status_def_t *ngx_http_status_lookup(ngx_uint_t status);
 
 /*
  * The reason member is the fused "NNN Phrase" form, exactly the bytes that
- * follow "HTTP/1.1 " in a status line, so that a status line is still emitted
- * with a single copy.  An ngx_null_string reason keeps the three digits and a
- * space that nginx emitted for that code before the registry existed, as it
- * did for every 1xx code; the separate "100 Continue" and "103 Early Hints"
+ * follow "HTTP/1.1 " in a status line, so that a status line is emitted with a
+ * single copy.  An ngx_null_string reason means the status line carries the
+ * three digits and a space and no phrase, which is how a described code with no
+ * phrase of its own is sent; the interim "100 Continue" and "103 Early Hints"
  * lines are emitted from their own constants and are not registry driven.
  *
- * The eight phrases that differ from the name RFC 9110 recommends are kept
- * exactly as nginx has always emitted them, because a reason phrase is a
- * recommendation only; the name from the RFC is recorded in rfc_section.
+ * A phrase that differs from the name RFC 9110 recommends is the wire form and
+ * is kept as it is, a reason phrase being a recommendation only; the name from
+ * the RFC is recorded in rfc_section beside the section that defines the code.
  */
 
 static ngx_http_status_def_t ngx_http_status_defs[NGX_HTTP_STATUS_MAX_DEFS] = {
@@ -289,65 +289,50 @@ ngx_http_status_lookup(ngx_uint_t status)
 
 
 /*
- * The single entry point for a status that nginx chose itself, so that a
- * policy such as validation has one place to apply.  headers_out.status and
- * status_final are the only members it writes, in every build.  The status
- * line, which a caller supplies verbatim or leaves empty, and the error
- * status, which is a different status for a different purpose, are not
- * written here.
+ * Writes a response status that nginx or a module chose, so that a policy such
+ * as validation has one place to apply.  headers_out.status and status_final
+ * are the only members it writes, in every build: the status line, which a
+ * caller supplies verbatim or leaves empty, and the error status, which is a
+ * different status for a different purpose, are left alone.  Two stores of a
+ * response status stand outside this function by design, the status an upstream
+ * authored, which ngx_http_upstream_process_headers() copies across directly,
+ * and the NGX_HTTP_OK that the embedded Perl send_http_header() falls back to.
  *
- * A status that reaches this function was chosen by nginx or by a module, and
- * never by an upstream: the two places that carry an upstream's status across
- * into nginx's own structures, the copy in ngx_http_upstream_process_headers()
- * and the interception in ngx_http_upstream_intercept_errors(), both store it
- * directly and neither calls this function.
+ * A build without --with-http_status_validation stores the status and answers
+ * NGX_OK for any status, so the whole of the function is two stores.  How wide
+ * a status may be is not asked here in either build: that is a property of the
+ * encoding a response uses, so the two field encoders that reserve exactly
+ * three bytes for it hold their own bound, as does the status() method of the
+ * embedded Perl module, which admits a status from outside nginx.
  *
- * A build without the switch stores the status and answers NGX_OK, whatever the
- * status is: what nginx sends is then exactly what it sent before the registry
- * existed, which is where behaviour matters, and the whole of this function is
- * two stores.  How wide a status may be is not asked here either, because it is
- * a property of the encoding a response uses rather than of choosing a status:
- * an HTTP/1.x status line encodes any width, and the two field encoders that
- * reserve exactly three bytes for it test it themselves, as does the one
- * boundary that admits a status from outside nginx altogether, the status()
- * method of the embedded Perl module.
+ * A build configured with the switch reports and then refuses a status the
+ * registry does not describe, before storing it: the caller's own error path
+ * then answers the request as it answers any other failure, and the status the
+ * request already carried is not replaced.  Every call is examined, and nothing
+ * is remembered about a request for the sake of it, so a status refused once
+ * and set again is refused and reported again.  The report is written at alert
+ * level, so that it survives an error_log level that hides anything less.
  *
- * A build configured with --with-http_status_validation looks for a status the
- * registry does not describe.  Such a status is perfectly sendable, so it is
- * reported and then refused before it is stored, so that the caller's own error
- * handling runs and answers the request as it answers any other failure, and so
- * that the status the request already carried is not replaced by one that build
- * was configured to object to.  A call looks at the status once, and that one
- * answer decides both the report and the refusal.
- *
- * Every call looks, and a call is refused whenever the status it carries is one
- * the registry does not describe.  What has already happened to the request
- * decides nothing: a status refused once and then set again, from the same
- * caller or from another, is examined and refused again, so that no sequence of
- * calls arrives at a status this build was configured to object to.  Nothing is
- * remembered about a request for the sake of this, and nothing needs to be: a
- * report is written for each status refused, at alert level so that it survives
- * an error_log level that hides anything less.
- *
- * That search is scoped to the origin of the response, by r->upstream, and not
- * to the value of the status: a request answered from an upstream is relayed
- * faithfully, whatever it answered.  A status nginx chooses for such a request
+ * The examination is scoped to the origin of the response, by r->upstream, and
+ * never to the value of the status or to the call site: a request answered from
+ * an upstream is relayed faithfully, whatever the upstream answered, and the
+ * upstream boundary is crossed both by the direct copy named above and by
+ * ngx_http_upstream_intercept_errors(), which carries such a status into
+ * nginx's own error page machinery.  A status nginx chooses for such a request
  * is exempt with it, which is wider than it need be and costs nothing, every
- * status nginx itself chooses being described by the registry.  Reporting is
- * all that the exemption decides, so no response in any build depends on it.
+ * status nginx chooses being described by the registry.  The exemption decides
+ * reporting alone, so no response depends on it.
  *
- * The two gates in ngx_http_special_response.c report the same way and refuse
- * nothing: one stands where a handler returned a status and the other where an
- * error_page directive supplied one, and neither has a caller with a result to
- * act on.  Such a status therefore reaches this function once more, when
- * ngx_http_send_header() moves the error status of the request into the
- * response, and it is refused there like any other: a build configured to
- * object to a status does not send it, and the request is finalized as it is
- * for any other failure of that function.
+ * The two gates in ngx_http_special_response.c report the same way but refuse
+ * nothing, neither having a caller with a result to act on.  A status one of
+ * them reported reaches this function once more, when ngx_http_send_header()
+ * moves the error status of the request into the response, and is refused there
+ * like any other: a build configured to object to a status does not send it,
+ * and the request is finalized as for any other failure of that function.
  *
- * The setter is a function that is called in either build, so that a module
- * compiled against one build of nginx behaves in another exactly as a module
- * compiled against that one does, and so that its argument is evaluated once.
+ * This is a function and not a macro in either build, so that a module compiled
+ * against one build of nginx behaves in another exactly as a module compiled
+ * against that one does, and so that its argument is evaluated once.
  */
 
 ngx_int_t
