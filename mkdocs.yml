@@ -1,6 +1,8 @@
 site_name: 'blitzy-nginx'
 nav:
   - Home: index.md
+  - Status Code Registry: api/status_codes.md
+  - Status Code API Migration: migration/status_code_api.md
 plugins:
   - techdocs-core
   - mermaid2
