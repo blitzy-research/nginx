@@ -30,6 +30,15 @@
 #define NGX_HTTP_V3_HEADER_USER_AGENT                95
 
 
+/*
+ * The widest status this encoder writes, which is the widest one three digits
+ * hold: the bound belongs to the fixed width field described where it is
+ * tested below, so it is written here and nowhere else.
+ */
+
+#define NGX_HTTP_V3_STATUS_MAX                       999
+
+
 typedef struct {
     ngx_chain_t         *free;
     ngx_chain_t         *busy;
@@ -134,7 +143,7 @@ ngx_http_v3_header_filter(ngx_http_request_t *r)
      * one from an upstream and three digits are written for it.
      */
 
-    if (!ngx_http_status_wire_width_ok(r->headers_out.status)) {
+    if (r->headers_out.status > NGX_HTTP_V3_STATUS_MAX) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
                       "HTTP status %ui too wide for an HTTP/3 response",
                       r->headers_out.status);

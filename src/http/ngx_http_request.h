@@ -575,23 +575,21 @@ struct ngx_http_request_s {
     unsigned                          health_check:1;
 
     /*
-     * the bookkeeping of the status code registry: status_final records that a
-     * response status has been chosen for the request, and status_reported that
-     * a status the registry does not describe has been reported for it.  They
-     * are bit fields in the request structure rather than module context data,
+     * the bookkeeping of the status code registry, which is this one bit: it
+     * records that a response status has been chosen for the request.  It is a
+     * bit field in the request structure rather than module context data,
      * following limit_conn_status and limit_req_status above; the request pool
-     * they live in is private to a request, so no thread local storage is
+     * it lives in is private to a request, so no thread local storage is
      * needed
      *
-     * status_reported is read in one place only, by ngx_http_status_report(),
-     * and all it decides is that one line is written to the log for a request
-     * however many statuses that request is refused.  Neither it nor
-     * status_final grants a status anything: every status ngx_http_status_set()
-     * is given is examined, whatever has been written for the request already
+     * it grants a status nothing.  Every status ngx_http_status_set() is given
+     * is examined, whatever has been written for the request already, and this
+     * is read where a status is set again after the response was decided, which
+     * is legitimate and is noted rather than refused
      *
-     * they are added unconditionally, and not only in a build configured with
+     * it is added unconditionally, and not only in a build configured with
      * --with-http_status_validation, so that the layout of this structure
-     * never depends on a build option; and they are added at the end of this
+     * never depends on a build option; and it is added at the end of this
      * bit field run, where the compiler had padding left before the aligned
      * member that follows, so that the storage unit and the bit position of
      * every member above is unchanged.  The size of the structure alone does
@@ -600,7 +598,6 @@ struct ngx_http_request_s {
      */
 
     unsigned                          status_final:1;
-    unsigned                          status_reported:1;
 
     /* used to parse HTTP headers */
 

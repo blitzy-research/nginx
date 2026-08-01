@@ -2837,19 +2837,23 @@ ngx_http_terminate_request(ngx_http_request_t *r, ngx_int_t rc)
     /*
      * The status a request is terminated with is written so that the access log
      * records it, and is not being chosen for a response: 444 and 499 are among
-     * the codes that reach here and no response carries either.  It is stored
-     * rather than set, so that it cannot be refused: a build configured with
-     * --with-http_status_validation refuses a status the registry does not
-     * describe, and there is nothing here to answer a refusal with, so setting
-     * would leave the log a status other than the one it is being given.  The
-     * bit recording that a status has been written is kept; the record of who
-     * chose one is left as it stands, nothing being handed to the gate in
-     * ngx_http_special_response_handler() after this.
+     * the codes that reach here and no response carries either.  It is written
+     * with the one API that writes a response status all the same, so that no
+     * write of one stands outside it, and it is written to the main request,
+     * which is the request that is logged.  What decides whether to write it at
+     * all is unchanged.
+     *
+     * There is nothing here to answer a refusal with: this function returns
+     * nothing, and the request is being terminated, so a refusal is reported
+     * and the log is left the status the request already carried.  A build
+     * without --with-http_status_validation refuses nothing.
      */
 
     if (rc > 0 && (mr->headers_out.status == 0 || mr->connection->sent == 0)) {
-        mr->headers_out.status = rc;
-        mr->status_final = 1;
+        if (ngx_http_status_set(mr, (ngx_uint_t) rc) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "invalid status");
+        }
     }
 
     cln = mr->cleanup;
@@ -3928,18 +3932,22 @@ ngx_http_free_request(ngx_http_request_t *r, ngx_int_t rc)
     /*
      * The status a request is closed with is written so that the access log
      * records it, and is not being chosen for a response: 444 and 499 are among
-     * the codes that reach here and no response carries either.  It is stored
-     * rather than set, so that it cannot be refused: a build configured with
-     * --with-http_status_validation refuses a status the registry does not
-     * describe, and there is nothing here to answer a refusal with, so setting
-     * would leave the log a status other than the one it is being given.  The
-     * bit recording that a status has been written is kept; the record of who
-     * chose one is left as it stands, the request being freed after this.
+     * the codes that reach here and no response carries either.  It is written
+     * with the one API that writes a response status all the same, so that no
+     * write of one stands outside it, and what decides whether to write it at
+     * all is unchanged.
+     *
+     * There is nothing here to answer a refusal with: this function returns
+     * nothing, and the request is freed after this, so a refusal is reported
+     * and the log is left the status the request already carried.  A build
+     * without --with-http_status_validation refuses nothing.
      */
 
     if (rc > 0 && (r->headers_out.status == 0 || r->connection->sent == 0)) {
-        r->headers_out.status = rc;
-        r->status_final = 1;
+        if (ngx_http_status_set(r, (ngx_uint_t) rc) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "invalid status");
+        }
     }
 
     if (!r->logged) {

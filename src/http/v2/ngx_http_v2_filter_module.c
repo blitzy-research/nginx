@@ -27,6 +27,15 @@
 #define NGX_HTTP_V2_NO_TRAILERS           (ngx_http_v2_out_frame_t *) -1
 
 
+/*
+ * The widest status this encoder writes, which is the widest one three digits
+ * hold: the bound belongs to the fixed width field described where it is
+ * tested below, so it is written here and nowhere else.
+ */
+
+#define NGX_HTTP_V2_STATUS_MAX            999
+
+
 static ngx_int_t ngx_http_v2_header_filter(ngx_http_request_t *r);
 static ngx_int_t ngx_http_v2_early_hints_filter(ngx_http_request_t *r);
 static ngx_int_t ngx_http_v2_init_stream(ngx_http_request_t *r);
@@ -178,7 +187,7 @@ ngx_http_v2_header_filter(ngx_http_request_t *r)
      * one from an upstream and three digits are written for it.
      */
 
-    if (!ngx_http_status_wire_width_ok(r->headers_out.status)) {
+    if (r->headers_out.status > NGX_HTTP_V2_STATUS_MAX) {
         ngx_log_error(NGX_LOG_ALERT, fc->log, 0,
                       "HTTP status %ui too wide for an HTTP/2 response",
                       r->headers_out.status);

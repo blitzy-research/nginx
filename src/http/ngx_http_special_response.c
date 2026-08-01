@@ -16,6 +16,7 @@ static ngx_int_t ngx_http_send_error_page(ngx_http_request_t *r,
 static ngx_int_t ngx_http_send_special_response(ngx_http_request_t *r,
     ngx_http_core_loc_conf_t *clcf, ngx_uint_t err);
 static ngx_int_t ngx_http_send_refresh(ngx_http_request_t *r);
+static ngx_uint_t ngx_http_error_page_index(ngx_uint_t status);
 
 
 static u_char ngx_http_error_full_tail[] =
@@ -338,12 +339,54 @@ static char ngx_http_error_507_page[] =
 
 
 /*
- * The rows are the zero length row followed by the three spans of consecutive
- * status codes that the status code registry describes the shape of: a row is
- * selected by ngx_http_status_error_page_index(), so the bodies are held here
- * while which of them a status code selects is registry knowledge like any
- * other.  The table is sized by the rows written out below, which the assertion
- * after them holds to the rows those spans account for.
+ * The shape of the table below: the three spans of consecutive status codes it
+ * holds a row for, each written as the half open range [FIRST, LIMIT) of the
+ * codes one span covers, and the row each span starts at, which follows from
+ * the spans before it.  The spans cover 301 through 308, that is
+ * NGX_HTTP_MOVED_PERMANENTLY through NGX_HTTP_PERMANENT_REDIRECT, then 400
+ * through 429, NGX_HTTP_BAD_REQUEST through NGX_HTTP_TOO_MANY_REQUESTS, and
+ * then 494 through 507, NGX_HTTP_NGINX_CODES through
+ * NGX_HTTP_INSUFFICIENT_STORAGE.
+ *
+ * This is the one place that shape is written down, and it is written here
+ * because the table is here.  The four offsets into this table that were
+ * maintained by hand beside its rows are gone, and with them a name they shared
+ * with the offsets of the reason phrase table while holding a different number:
+ * only the six bounds are written out, every row a span starts at is derived
+ * from them, and the number of rows the table holds is derived from them as
+ * well and held to the rows written out below.
+ */
+
+#define NGX_HTTP_ERROR_PAGE_3XX_FIRST   301
+#define NGX_HTTP_ERROR_PAGE_3XX_LIMIT   309
+#define NGX_HTTP_ERROR_PAGE_4XX_FIRST   400
+#define NGX_HTTP_ERROR_PAGE_4XX_LIMIT   430
+#define NGX_HTTP_ERROR_PAGE_49X_FIRST   494
+#define NGX_HTTP_ERROR_PAGE_49X_LIMIT   508
+
+#define NGX_HTTP_ERROR_PAGE_3XX_ROW     1
+
+#define NGX_HTTP_ERROR_PAGE_4XX_ROW                                           \
+    (NGX_HTTP_ERROR_PAGE_3XX_ROW                                              \
+     + (NGX_HTTP_ERROR_PAGE_3XX_LIMIT - NGX_HTTP_ERROR_PAGE_3XX_FIRST))
+
+#define NGX_HTTP_ERROR_PAGE_49X_ROW                                           \
+    (NGX_HTTP_ERROR_PAGE_4XX_ROW                                              \
+     + (NGX_HTTP_ERROR_PAGE_4XX_LIMIT - NGX_HTTP_ERROR_PAGE_4XX_FIRST))
+
+#define NGX_HTTP_ERROR_PAGE_ROWS                                              \
+    (NGX_HTTP_ERROR_PAGE_49X_ROW                                              \
+     + (NGX_HTTP_ERROR_PAGE_49X_LIMIT - NGX_HTTP_ERROR_PAGE_49X_FIRST))
+
+
+/*
+ * The rows are the zero length row followed by the three spans written above,
+ * and ngx_http_error_page_index() selects one from those spans: the rows follow
+ * the shape of this table rather than the membership of the status code
+ * registry, so which row a code selects is answered from the bounds of the
+ * table and not by looking a definition up.  The table is sized by the rows
+ * written out below, which the assertion after them holds to the rows those
+ * spans account for.
  *
  * A row exists for every code those spans cover, including a code the registry
  * does not describe: the row for 498 holds the 404 page, which is how nginx
@@ -416,17 +459,58 @@ static ngx_str_t ngx_http_error_pages[] = {
 
 
 /*
- * That the table holds a row for every code the registry's spans cover and no
- * row besides, checked where the rows are written and not while a configuration
- * is parsed: an array of a negative length is not a type, so a build fails
- * should a row be added or dropped here without the span that accounts for it,
- * or a span be moved without the rows it accounts for.  It is the size of the
- * table itself that is checked, so nothing of the mapping is written out twice.
+ * That the table holds a row for every code those spans cover and no row
+ * besides, checked where the rows are written and not while a configuration is
+ * parsed: an array of a negative length is not a type, so a build fails should
+ * a row be added or dropped here without the span that accounts for it, or a
+ * span be moved without the rows it accounts for.  It is the size of the table
+ * itself that is checked, so nothing of the mapping is written out twice.
  */
 
 typedef char ngx_http_error_pages_check_t
     [sizeof(ngx_http_error_pages) / sizeof(ngx_str_t)
-     == NGX_HTTP_STATUS_ERROR_PAGE_ROWS ? 1 : -1];
+     == NGX_HTTP_ERROR_PAGE_ROWS ? 1 : -1];
+
+
+/*
+ * The row of the table above that a status code selects: the offset of the code
+ * within the span that covers it, added to the row that span starts at.  A code
+ * that no span covers, whether it falls between the spans as 444 does or lies
+ * outside them altogether, selects the zero length row.
+ *
+ * A span covers every code in its range, including a code the status code
+ * registry does not describe, so the spans and not the registry are what this
+ * answers from.
+ */
+
+static ngx_uint_t
+ngx_http_error_page_index(ngx_uint_t status)
+{
+    if (status >= NGX_HTTP_ERROR_PAGE_3XX_FIRST
+        && status < NGX_HTTP_ERROR_PAGE_3XX_LIMIT)
+    {
+        return NGX_HTTP_ERROR_PAGE_3XX_ROW
+               + (status - NGX_HTTP_ERROR_PAGE_3XX_FIRST);
+    }
+
+    if (status >= NGX_HTTP_ERROR_PAGE_4XX_FIRST
+        && status < NGX_HTTP_ERROR_PAGE_4XX_LIMIT)
+    {
+        return NGX_HTTP_ERROR_PAGE_4XX_ROW
+               + (status - NGX_HTTP_ERROR_PAGE_4XX_FIRST);
+    }
+
+    if (status >= NGX_HTTP_ERROR_PAGE_49X_FIRST
+        && status < NGX_HTTP_ERROR_PAGE_49X_LIMIT)
+    {
+        return NGX_HTTP_ERROR_PAGE_49X_ROW
+               + (status - NGX_HTTP_ERROR_PAGE_49X_FIRST);
+    }
+
+    /* a code with no row of its own, so a zero length body */
+
+    return 0;
+}
 
 
 /*
@@ -467,10 +551,10 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
      * There is no caller here with a result to act on, this function being
      * what answers a request that has already gone wrong, so a status is
      * reported and not refused; ngx_http_status_set() is where a status is
-     * refused, its caller having an error path of its own.  The report is
-     * recorded on the request, so a status that is reported here is not
-     * reported a second time should it also be set, and promoting it over the
-     * response status in ngx_http_send_header() reports nothing at all.
+     * refused, its caller having an error path of its own, and such a status
+     * reaches the setter once more when ngx_http_send_header() moves the error
+     * status of the request into the response.  The report is written at alert
+     * level, so that it survives an error_log level that hides anything less.
      *
      * This is the one gate that is handed a status whose author it does not
      * know, an upstream's status arriving here whenever an error of its is
@@ -481,7 +565,8 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
     if (r->upstream == NULL
         && ngx_http_status_validate((ngx_uint_t) error) != NGX_OK)
     {
-        ngx_http_status_report(r, (ngx_uint_t) error);
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "unregistered HTTP status %ui", (ngx_uint_t) error);
     }
 
 #endif
@@ -555,7 +640,7 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
 
     } else {
         /* 3XX, 4XX, 49X, 5XX, and zero body for an unknown code */
-        err = ngx_http_status_error_page_index((ngx_uint_t) error);
+        err = ngx_http_error_page_index((ngx_uint_t) error);
 
         if (error >= NGX_HTTP_NGINX_CODES) {
             /* 49X */
@@ -657,8 +742,7 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
          * the second author of the error status of a request, beside the
          * handler whose returned status ngx_http_special_response_handler()
          * gates above; it writes after that gate has run, so it is gated in
-         * its own right rather than left to whatever reads the status later,
-         * and not again where the status is promoted over the response status.
+         * its own right rather than left to whatever reads the status later.
          *
          * A zero overwrite carries no status: it is the "=" and "=0" form of
          * the directive, which keeps the status of what the request is
@@ -680,7 +764,9 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
         if (overwrite
             && ngx_http_status_validate((ngx_uint_t) overwrite) != NGX_OK)
         {
-            ngx_http_status_report(r, (ngx_uint_t) overwrite);
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "unregistered HTTP status %ui",
+                          (ngx_uint_t) overwrite);
         }
 
 #endif
@@ -751,7 +837,7 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
 
     /* the status here is one of the redirects, so it selects a 3XX row */
 
-    err = ngx_http_status_error_page_index(r->err_status);
+    err = ngx_http_error_page_index(r->err_status);
 
     return ngx_http_send_special_response(r, clcf, err);
 }
@@ -795,7 +881,7 @@ ngx_http_send_special_response(ngx_http_request_t *r,
         if (clcf->msie_padding
             && (r->headers_in.msie || r->headers_in.chrome)
             && r->http_version >= NGX_HTTP_VERSION_10
-            && err >= NGX_HTTP_STATUS_ERROR_PAGE_4XX_ROW)
+            && err >= NGX_HTTP_ERROR_PAGE_4XX_ROW)
         {
             r->headers_out.content_length_n +=
                                          sizeof(ngx_http_msie_padding) - 1;

@@ -30,7 +30,6 @@ static ngx_int_t ngx_http_core_find_static_location(ngx_http_request_t *r,
 
 static ngx_int_t ngx_http_core_preconfiguration(ngx_conf_t *cf);
 static ngx_int_t ngx_http_core_postconfiguration(ngx_conf_t *cf);
-static ngx_int_t ngx_http_core_init_module(ngx_cycle_t *cycle);
 static void *ngx_http_core_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_core_init_main_conf(ngx_conf_t *cf, void *conf);
 static void *ngx_http_core_create_srv_conf(ngx_conf_t *cf);
@@ -818,7 +817,7 @@ ngx_module_t  ngx_http_core_module = {
     ngx_http_core_commands,                /* module directives */
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
-    ngx_http_core_init_module,             /* init module */
+    NULL,                                  /* init module */
     NULL,                                  /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
@@ -1849,20 +1848,22 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
 /*
  * The error status of a request is moved into the response here, over the
  * response status, and this is the last point a response passes through on its
- * way to the filter chain that emits it.  The move is made with
- * ngx_http_status_promote() and not with ngx_http_status_set(), because there
- * is nowhere further to carry a result to: the status being moved was examined
- * where it was chosen, by the gate in ngx_http_special_response_handler() or by
- * ngx_http_send_error_page(), and where such a gate reported a status the
- * registry does not describe it deliberately let it stand, having no caller of
- * its own to answer a refusal to.  Refusing the move would take that response
- * away again and leave a request that had already gone wrong with no response
- * at all.  The setter is what examines a status being chosen, and it refuses
- * every status the registry does not describe; nothing is chosen here.
+ * way to the filter chain that emits it.  The move is made with the one API
+ * that writes a response status, so that no write of one stands outside it.
  *
- * The status line is cleared after the store and not by it, neither the
- * promotion nor the setter touching the status line, so that the promoted
- * status is not sent under the status line of the one it replaced.
+ * The status being moved was examined where it was chosen, by the gate in
+ * ngx_http_special_response_handler() or by ngx_http_send_error_page(), and
+ * neither of those refuses one: each reports a status the registry does not
+ * describe and lets it stand, having no caller of its own to answer a refusal
+ * to.  A build configured with --with-http_status_validation refuses it here
+ * instead, where there is a caller to answer: the response is not sent, and the
+ * request is finalized as it is for any other failure of this function.  A
+ * build without the switch stores the status and answers NGX_OK, as it does for
+ * every status, so what such a build sends is unchanged.
+ *
+ * The status line is cleared after the store and not by it, the setter not
+ * touching the status line, so that the moved status is not sent under the
+ * status line of the one it replaced.
  */
 
 ngx_int_t
@@ -1879,7 +1880,11 @@ ngx_http_send_header(ngx_http_request_t *r)
     }
 
     if (r->err_status) {
-        ngx_http_status_promote(r);
+        if (ngx_http_status_set(r, r->err_status) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "invalid status");
+            return NGX_ERROR;
+        }
 
         r->headers_out.status_line.len = 0;
     }
@@ -3444,13 +3449,11 @@ ngx_http_core_preconfiguration(ngx_conf_t *cf)
     /*
      * The registry is prepared for every configuration that is parsed, here
      * because preconfiguration runs before any module can register a status
-     * code of its own.  Preparing it is not rebuilding it: the built-in
-     * definitions and the two tables derived from them do not depend on the
-     * configuration, so they are derived once in the life of the process,
-     * before any worker exists, and every later configuration reads them
-     * exactly as the first one left them.  What a later configuration writes is
-     * the seal, which is one word, and the rows of any status its own modules
-     * register.
+     * code of its own.  Preparing it leaves it holding the codes nginx was
+     * built with and nothing besides, so a reload and a configuration test are
+     * answered exactly as a first start is, and what the configuration before
+     * this one registered is gone with it.  Every page it writes is written in
+     * the master process, before any worker is forked from it.
      */
 
     if (ngx_http_status_init(cf) != NGX_OK) {
@@ -3466,31 +3469,18 @@ ngx_http_core_postconfiguration(ngx_conf_t *cf)
 {
     ngx_http_top_request_body_filter = ngx_http_request_body_save_filter;
 
-    return NGX_OK;
-}
+    /*
+     * The registry is closed to registration here, once the whole of the
+     * configuration has been parsed: a status code of a module's own is
+     * registered while it is parsed, from a directive of that module or from
+     * its preconfiguration, so every module has had that opportunity by now.
+     * No worker process has been forked yet, so from here on the registry is
+     * only ever read, and no page of it is copied on write in a worker: a
+     * worker's private memory does not grow on account of it, whether that
+     * worker was forked for the first configuration or for one that replaced
+     * it.
+     */
 
-
-/*
- * The registry is sealed here rather than from postconfiguration, because the
- * postconfiguration handlers of the HTTP modules run in module order and this
- * module is the first of them: sealing there would seal every other module out
- * of registering a status code of its own before its own handler had run.  The
- * init module handlers run once the whole configuration has been parsed and
- * before any worker process is forked, so this is the earliest point at which
- * every module has had that opportunity, and it is still the master process
- * with no worker to share the registry with.
- *
- * A worker therefore only reads the registry, whether it was forked for the
- * first configuration or for one that replaced it, so no page of the registry
- * is ever copied on write in a worker and a worker's private memory does not
- * grow on account of it.  The master does write as each later configuration is
- * parsed and sealed, and writes only what that configuration changes: the seal,
- * and the rows of any status that configuration's modules register.
- */
-
-static ngx_int_t
-ngx_http_core_init_module(ngx_cycle_t *cycle)
-{
     ngx_http_status_seal();
 
     return NGX_OK;

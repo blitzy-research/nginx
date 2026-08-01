@@ -160,37 +160,20 @@ ngx_int_t ngx_http_filter_finalize_request(ngx_http_request_t *r,
 void ngx_http_clean_header(ngx_http_request_t *r);
 
 
+/*
+ * The API of the HTTP status code registry: the first sets a status a module
+ * chose, and is the one way to choose one, while the other four answer about
+ * a status code and change nothing.  The record a definition is written as,
+ * the flags one carries and the macros over a status code are in
+ * ngx_http_status.h, along with the functions the HTTP core and two of its
+ * modules use that are not part of this API.
+ */
+
 ngx_int_t ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status);
 ngx_int_t ngx_http_status_validate(ngx_uint_t status);
 const ngx_str_t *ngx_http_status_reason(ngx_uint_t status);
 ngx_uint_t ngx_http_status_is_cacheable(ngx_uint_t status);
 ngx_int_t ngx_http_status_register(ngx_http_status_def_t *def);
-
-/*
- * The six the HTTP core and its own modules use, declared here beside the API
- * they belong to rather than in ngx_http_status.h: ngx_http_status_effective()
- * takes a request, and the request is a type this file defines, so declaring
- * them there would have that header depend on this one, which includes it.
- * ngx_http_status.h holds the record a definition is written as and the macros
- * over a status code, and every function the registry defines is declared here.
- * init() runs for every configuration parsed, seal() before workers fork.
- *
- * None of the six is part of the API a module writes against.
- * error_page_index() answers which row of the error page table of
- * ngx_http_special_response.c a status code selects, for that file.  promote()
- * is the one to be careful of: it is how ngx_http_send_header() moves an error
- * status that has been examined already into the response, and it examines
- * nothing itself.  A module with a status to set calls ngx_http_status_set(),
- * which examines every status it is given; there is no second way to choose
- * one.
- */
-
-ngx_int_t ngx_http_status_init(ngx_conf_t *cf);
-void ngx_http_status_seal(void);
-void ngx_http_status_promote(ngx_http_request_t *r);
-ngx_uint_t ngx_http_status_effective(ngx_http_request_t *r);
-ngx_uint_t ngx_http_status_expires_ok(ngx_uint_t status);
-ngx_uint_t ngx_http_status_error_page_index(ngx_uint_t status);
 
 
 ngx_int_t ngx_http_discard_request_body(ngx_http_request_t *r);
