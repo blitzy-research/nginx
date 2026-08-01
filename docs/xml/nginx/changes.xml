@@ -10,7 +10,7 @@
 <change type="change">
 <para lang="ru">
 статусы ответов описаны единым реестром;
-по нему определяются строка статуса,
+по нему определяются строка статуса, страница ошибки,
 значение переменной $status
 и пригодность статуса для обработки директивой expires;
 отдаваемые ответы при этом не изменились,
@@ -32,8 +32,8 @@
 </para>
 <para lang="en">
 response statuses are described by a single registry;
-the status line, the value of the $status variable,
-and the eligibility of a status
+the status line, the error page, the value of the $status
+variable, and the eligibility of a status
 for the "expires" directive are determined from it;
 the responses nginx sends are unchanged,
 except for a status of four or more digits:

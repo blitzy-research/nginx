@@ -78,23 +78,25 @@ No per-file include edit is normally required.
 The entry point for a status nginx or a module chose itself. It answers `NGX_OK`
 or `NGX_ERROR`, and a caller is expected to act on the result.
 
-Direct stores of `r->headers_out.status` are kept in the core beside it in three
-places, and a module converting call sites of its own has no use for any of
-them:
-an upstream's status being relayed into the response, which
+Direct stores of `r->headers_out.status` are kept in the core beside it at
+**four call sites, which fall into three categories**, and a module converting
+call sites of its own has no use for any of them: an upstream's status being
+relayed into the response, which
 [upstream-originated statuses](#7-upstream-originated-statuses) covers; the two
-teardown stores made only so that the access log has a status, which [a site
-that only records an already-decided
+teardown stores — two sites, one category — made only so that the access log has
+a status, which [a site that only records an already-decided
 status](#a-site-that-only-records-an-already-decided-status) sets out; and the
 `NGX_HTTP_OK` that the embedded Perl `send_http_header()` falls back to for a
 script that set no status at all.
 
-One further store is made by the registry module itself rather than at a call
-site of it: `ngx_http_status_promote()`, which moves the error status of a
-request over its response status where `ngx_http_send_header()` finishes a
-response, and which [a status that is merely being
-moved](#a-status-that-is-merely-being-moved) sets out. Nothing else in the tree
-writes that member.
+Two further stores are made by the registry module itself rather than at a call
+site of it: the one `ngx_http_status_set()` makes for a status it has accepted,
+and `ngx_http_status_promote()`, which moves the error status of a request over
+its response status where `ngx_http_send_header()` finishes a response, and
+which [a status that is merely being
+moved](#a-status-that-is-merely-being-moved) sets out. Four external sites and
+those two are **six assignments** to that member in the whole of `src/http`, and
+nothing else in the tree writes it.
 
 On success it writes exactly two members of the request: the response status
 `r->headers_out.status`, and `r->status_final = 1`, which records that a
@@ -276,40 +278,57 @@ counting on them.
 ## 4. Lifecycle and custom registration
 
 Alongside the [five public functions](#2-public-status-api),
-`src/http/ngx_http.h` declares the helpers the HTTP core and the modules that
-ship with it use:
+`src/http/ngx_http.h` declares the **six** helpers the HTTP core and the modules
+that ship with it use. This block is the whole of that surface; every function
+the registry defines is declared in `src/http/ngx_http.h`, and
+`src/http/ngx_http_status.h` declares no function at all:
 
 ```c
 ngx_int_t ngx_http_status_init(ngx_conf_t *cf);
 void ngx_http_status_seal(void);
+void ngx_http_status_promote(ngx_http_request_t *r);
 ngx_uint_t ngx_http_status_effective(ngx_http_request_t *r);
 ngx_uint_t ngx_http_status_expires_ok(ngx_uint_t status);
+ngx_uint_t ngx_http_status_error_page_index(ngx_uint_t status);
 ```
 
-They are declared there rather than in `src/http/ngx_http_status.h` because each
-takes a type that arrives through that aggregator, `ngx_conf_t` or
+They are declared there rather than in `src/http/ngx_http_status.h` because the
+first four take a type that arrives through that aggregator, `ngx_conf_t` or
 `ngx_http_request_t`, and declaring them there is what lets
 `src/http/ngx_http_status.h` include nothing but `ngx_config.h` and `ngx_core.h`
-and so be included directly, on its own, from anywhere.
+and so be included directly, on its own, from anywhere. The last two are
+declared beside them because they belong to the same surface, and keeping one
+inventory in one file is what makes the surface reviewable.
 
 These are not the module-facing API — a module adopting the registry calls the
 [five public functions](#2-public-status-api) — but they are not private either.
 Each has **external linkage**, because each is called from a translation unit
 other than the one that defines it: `init()` and `seal()` from the HTTP core
-module, `effective()` from the log module and the variable evaluator, and
-`expires_ok()` from the headers filter. Only the registry's own lookup and the
-helper that discards a configuration's registrations are `static`. A module may
-call `expires_ok()` and `effective()`, described in [`CACHEABLE` is not
+module, `promote()` from `ngx_http_send_header()` in that same module,
+`effective()` from the log module and the variable evaluator, `expires_ok()`
+from the headers filter, and `error_page_index()` from the special response
+handler. Only the registry's own lookup, the helper that discards a
+configuration's registrations, and the check that holds the error page spans to
+the rows they account for are `static`. A module may call `expires_ok()` and
+`effective()`, described in [`CACHEABLE` is not
 `EXPIRES_OK`](#cacheable-is-not-expires_ok) and [effective
-status](#effective-status); the other two belong to the core and a module has no
-reason to call them.
+status](#effective-status); the other four belong to the core and a module has
+no reason to call any of them —
+[a status that is merely being moved](#a-status-that-is-merely-being-moved) says
+why `promote()` in particular is not an alternative to the setter.
 
-The row of the error page table that a status selects is **not** among them.
-That mapping belongs to `src/http/ngx_http_special_response.c`, which owns the
-table and is the only thing that reads it, and it is file-local there: a span
-table, a compile-time assertion that the spans account for exactly as many rows
-as the table has, and a `static` function. The registry publishes nothing about
-it.
+The row of the error page table that a status selects is answered by the last of
+the six, `ngx_http_status_error_page_index()`. The bodies stay in
+`src/http/ngx_http_special_response.c`, the only file of nginx that reads that
+answer, but the mapping is the registry's: the bounds of the three spans of
+consecutive codes the bodies are held for are named once in
+`src/http/ngx_http_status.h` as `NGX_HTTP_STATUS_ERROR_PAGE_3XX_FIRST` and its
+neighbours, `NGX_HTTP_STATUS_ERROR_PAGE_ROWS` and
+`NGX_HTTP_STATUS_ERROR_PAGE_4XX_ROW` are derived from those bounds, and the
+registry both walks the spans and refuses a configuration whose span table and
+row count disagree. The table of bodies is held to those rows by an assertion on
+its own size, so a row added to it or taken from it is a compile error rather
+than a silent hole.
 
 ### The window
 
@@ -608,8 +627,10 @@ store is not an alternative that is open.
 Moving a status that was already examined where it was chosen is not choosing a
 status, and it does not go through the setter. There is exactly one such site in
 the tree — `ngx_http_send_header()` moving `err_status` over the response status
-— and it is served by an internal seam, `ngx_http_status_promote()`, declared in
-`src/http/ngx_http.h` beside the lifecycle helpers:
+— and it is served by an internal seam, `ngx_http_status_promote()`, the third
+of the six helpers `src/http/ngx_http.h` declares beside the public API, listed
+in full under [lifecycle and custom
+registration](#4-lifecycle-and-custom-registration):
 
 ```c
     if (r->err_status) {
@@ -635,7 +656,8 @@ call onward, store exactly what a strict build was configured to object to.
 
 **A module never calls the seam.** It is not part of the API a module writes
 against: it exists for this one core site, for one status, and it is declared
-among the helpers precisely to say so. A module with a status to choose calls
+among the six helpers rather than among the five public functions precisely to
+say so. A module with a status to choose calls
 `ngx_http_status_set()` and uses the three-line wrapper above.
 
 ### Keep the side effects that were already there

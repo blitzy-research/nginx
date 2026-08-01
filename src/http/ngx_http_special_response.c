@@ -11,31 +11,6 @@
 #include <nginx.h>
 
 
-/*
- * The rows of the error page table below are the zero length row followed by
- * three spans of consecutive status codes, so which row a status code selects
- * is a property of that table and is answered here, where the table is, rather
- * than by the status code registry: the registry describes a status code, and
- * the shape of this table is not something a status code has.  This is the
- * number of rows those spans account for, and it sizes the table.
- */
-
-#define NGX_HTTP_ERROR_PAGE_ROWS   53
-
-
-/*
- * One span of consecutive status codes that the table holds a row for.  The
- * table of spans below is the whole of the mapping, in place of the four
- * offsets into the table that were maintained by hand beside its rows.
- */
-
-typedef struct {
-    ngx_uint_t   first;                  /* first status code of the span */
-    ngx_uint_t   last;                   /* one past the last status code */
-} ngx_http_error_page_span_t;
-
-
-static ngx_uint_t ngx_http_error_page_index(ngx_uint_t status);
 static ngx_int_t ngx_http_send_error_page(ngx_http_request_t *r,
     ngx_http_err_page_t *err_page);
 static ngx_int_t ngx_http_send_special_response(ngx_http_request_t *r,
@@ -364,11 +339,19 @@ static char ngx_http_error_507_page[] =
 
 /*
  * The rows are the zero length row followed by the three spans of consecutive
- * status codes that ngx_http_error_page_spans[] below describes, and a row is
- * selected by ngx_http_error_page_index().
+ * status codes that the status code registry describes the shape of: a row is
+ * selected by ngx_http_status_error_page_index(), so the bodies are held here
+ * while which of them a status code selects is registry knowledge like any
+ * other.  The table is sized by the rows written out below, which the assertion
+ * after them holds to the rows those spans account for.
+ *
+ * A row exists for every code those spans cover, including a code the registry
+ * does not describe: the row for 498 holds the 404 page, which is how nginx
+ * answers a request whose host name is invalid, and the rows for the other
+ * codes it does not describe hold no page at all.
  */
 
-static ngx_str_t ngx_http_error_pages[NGX_HTTP_ERROR_PAGE_ROWS] = {
+static ngx_str_t ngx_http_error_pages[] = {
 
     ngx_null_string,                     /* 201, 204 */
 
@@ -433,85 +416,17 @@ static ngx_str_t ngx_http_error_pages[NGX_HTTP_ERROR_PAGE_ROWS] = {
 
 
 /*
- * The spans of consecutive status codes the table above holds a row for, in
- * ascending order, each the half open range [first, last) of the codes it
- * covers.  A code selects a row by locating the span that covers it and adding
- * its offset within that span to the row at which that span starts, so a span
- * records only the codes it covers and the row it starts at follows from the
- * spans before it.  Between them they account for every row of the table
- * exactly once: 1 + (309 - 301) + (430 - 400) + (508 - 494) is
- * NGX_HTTP_ERROR_PAGE_ROWS, which the compile time assertion below checks,
- * because the spans and the row count are both edited by hand.
+ * That the table holds a row for every code the registry's spans cover and no
+ * row besides, checked where the rows are written and not while a configuration
+ * is parsed: an array of a negative length is not a type, so a build fails
+ * should a row be added or dropped here without the span that accounts for it,
+ * or a span be moved without the rows it accounts for.  It is the size of the
+ * table itself that is checked, so nothing of the mapping is written out twice.
  */
 
-static const ngx_http_error_page_span_t  ngx_http_error_page_spans[] = {
-    { NGX_HTTP_MOVED_PERMANENTLY, 309 },
-    { NGX_HTTP_BAD_REQUEST, 430 },
-    { NGX_HTTP_NGINX_CODES, 508 },
-    { 0, 0 }
-};
-
-
-/*
- * The row the second span starts at, which is the row 400 selects.  It is the
- * one row a response path asks for by a constant rather than by a status, so
- * writing it as one keeps that path from resolving a code it already knows.  It
- * is the same arithmetic over the same spans that the assertion below checks,
- * written out once, so it cannot disagree with them.
- */
-
-#define NGX_HTTP_ERROR_PAGE_4XX   (1 + (309 - NGX_HTTP_MOVED_PERMANENTLY))
-
-
-/*
- * That the spans and the row count agree, checked where they are written and
- * not while a configuration is parsed: an array of a negative length is not a
- * type, so a build fails should they ever disagree.
- */
-
-typedef char ngx_http_error_page_rows_check_t
-    [1 + (309 - NGX_HTTP_MOVED_PERMANENTLY)
-       + (430 - NGX_HTTP_BAD_REQUEST)
-       + (508 - NGX_HTTP_NGINX_CODES) == NGX_HTTP_ERROR_PAGE_ROWS ? 1 : -1];
-
-
-/*
- * The row of the error page table that a status code selects.  A code that no
- * span covers, whether it falls between the spans as 444 does or lies outside
- * them altogether, selects the zero length row.
- *
- * A span covers every code in its range, including a code the registry does
- * not describe: the row for 498 holds the 404 page, which is how nginx answers
- * a request whose host name is invalid, and the rows for the other codes the
- * registry does not describe hold no page at all.  The rows therefore follow
- * the shape of the table and not the membership of the registry.
- */
-
-static ngx_uint_t
-ngx_http_error_page_index(ngx_uint_t status)
-{
-    ngx_uint_t                         row;
-    const ngx_http_error_page_span_t  *span;
-
-    row = 1;
-
-    for (span = ngx_http_error_page_spans; span->first; span++) {
-
-        if (status < span->first) {
-            break;
-        }
-
-        if (status < span->last) {
-            return row + (status - span->first);
-        }
-
-        row += span->last - span->first;
-    }
-
-    /* a code with no row of its own, so a zero length body */
-
-    return 0;
-}
+typedef char ngx_http_error_pages_check_t
+    [sizeof(ngx_http_error_pages) / sizeof(ngx_str_t)
+     == NGX_HTTP_STATUS_ERROR_PAGE_ROWS ? 1 : -1];
 
 
 /*
@@ -640,7 +555,7 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
 
     } else {
         /* 3XX, 4XX, 49X, 5XX, and zero body for an unknown code */
-        err = ngx_http_error_page_index((ngx_uint_t) error);
+        err = ngx_http_status_error_page_index((ngx_uint_t) error);
 
         if (error >= NGX_HTTP_NGINX_CODES) {
             /* 49X */
@@ -836,7 +751,7 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
 
     /* the status here is one of the redirects, so it selects a 3XX row */
 
-    err = ngx_http_error_page_index(r->err_status);
+    err = ngx_http_status_error_page_index(r->err_status);
 
     return ngx_http_send_special_response(r, clcf, err);
 }
@@ -880,7 +795,7 @@ ngx_http_send_special_response(ngx_http_request_t *r,
         if (clcf->msie_padding
             && (r->headers_in.msie || r->headers_in.chrome)
             && r->http_version >= NGX_HTTP_VERSION_10
-            && err >= NGX_HTTP_ERROR_PAGE_4XX)
+            && err >= NGX_HTTP_STATUS_ERROR_PAGE_4XX_ROW)
         {
             r->headers_out.content_length_n +=
                                          sizeof(ngx_http_msie_padding) - 1;

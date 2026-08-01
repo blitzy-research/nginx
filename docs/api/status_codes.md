@@ -5,30 +5,38 @@ Reference for the HTTP status codes the registry in
 where it carries one, the semantic flags it is described with, and the
 specification section that defines it.
 
-The registry is the single place that holds this knowledge, and four pieces of
+The registry is the single place that holds this knowledge, and five pieces of
 logic read it rather than each keeping a copy of their own: the reason phrase of
-a status line, the effective `$status` value that the log module and the
-variable evaluator both need, the `expires` eligibility of a response, and the
-setting of a response status, which goes through `ngx_http_status_set()` where
-nginx chooses a status for a response of its own. Direct stores of the response
-status are kept in three places outside that last one, plus one the registry
-module makes itself, and [setting a status](#setting-a-status) says what each
-is: an upstream's status relayed into the response, the two teardown stores made
-only so that the access log has a status, the `NGX_HTTP_OK` the embedded Perl
-`send_http_header()` falls back to for a script that set none, and the move that
-finishes a response.
+a status line, the row of the error page table a status selects, the effective
+`$status` value that the log module and the variable evaluator both need, the
+`expires` eligibility of a response, and the setting of a response status, which
+goes through `ngx_http_status_set()` where nginx chooses a status for a response
+of its own.
+
+Outside that last one the response status is stored directly at **four call
+sites, which fall into three categories**, and
+[setting a status](#setting-a-status) says what each is: an upstream's status
+relayed into the response, the two teardown stores made only so that the access
+log has a status, and the `NGX_HTTP_OK` the embedded Perl `send_http_header()`
+falls back to for a script that set none. Two further stores are made inside the
+registry module itself rather than at a call site of it — the one the setter
+makes for a status it has accepted, and the move that finishes a response —
+which makes six assignments in all.
 
 What the registry does not hold stays where it is. The status constants in
 `src/http/ngx_http_request.h` are unchanged and remain the way a module names a
 status. The compiled in error page bodies belong to
-`src/http/ngx_http_special_response.c`, and so does the choice of which of them
-a status selects: that file holds its own table of status spans and resolves a
-row from it without consulting the registry at all, because the rows follow the
-shape of that table — spans of consecutive codes — and not the membership of the
-registry. Status comparisons that decide behavior rather than describe a status
-— the 204 and 304 handling in the header filter, the keepalive and lingering
-close rules of the special response handler — are written out where the decision
-is made.
+`src/http/ngx_http_special_response.c`, while which of them a status selects is
+the registry's to answer: the bounds of the three spans of consecutive codes
+those bodies are held for are named once in `src/http/ngx_http_status.h`,
+`ngx_http_status_error_page_index()` walks them, and the table beside the bodies
+is held to the rows those spans account for by an assertion on its own size.
+The rows follow the shape of that table rather than the membership of the
+registry, which is why a span covers a code the registry does not describe as
+readily as one it does. Status comparisons that decide behavior rather than
+describe a status — the 204 and 304 handling in the header filter, the keepalive
+and lingering close rules of the special response handler — are written out
+where the decision is made.
 
 For every status a response can carry, the bytes a client receives are the bytes
 nginx has always sent: each status line, each error page body, each `$status`
@@ -484,25 +492,72 @@ nothing for the registry, and a lookup costs no memory whatever the response.
 rather than a function, so the argument is expanded more than once and must not
 have side effects.
 
+### Error page rows
+
+The compiled in error page bodies of `src/http/ngx_http_special_response.c` are
+held for three spans of consecutive codes. The bounds of those spans are named
+in `src/http/ngx_http_status.h`, and are the only place they are written:
+
+| Constant | Value | Meaning |
+| -------- | ----- | ------- |
+| `NGX_HTTP_STATUS_ERROR_PAGE_3XX_FIRST` | 301 | first code of the redirect span |
+| `NGX_HTTP_STATUS_ERROR_PAGE_3XX_LIMIT` | 309 | one past its last code, so 308 is the last |
+| `NGX_HTTP_STATUS_ERROR_PAGE_4XX_FIRST` | 400 | first code of the client error span |
+| `NGX_HTTP_STATUS_ERROR_PAGE_4XX_LIMIT` | 430 | one past its last code, so 429 is the last |
+| `NGX_HTTP_STATUS_ERROR_PAGE_49X_FIRST` | 494 | first code of the span nginx's own codes fall in |
+| `NGX_HTTP_STATUS_ERROR_PAGE_49X_LIMIT` | 508 | one past its last code, so 507 is the last |
+| `NGX_HTTP_STATUS_ERROR_PAGE_ROWS` | 53 | rows those spans account for, the zero length row included, **derived** from the six above |
+| `NGX_HTTP_STATUS_ERROR_PAGE_4XX_ROW` | 9 | the row 400 selects, **derived** from the first two |
+
+`ngx_http_status_error_page_index()` walks the spans in order and answers the
+row a code selects: row 0, which holds no body, for a code no span covers; rows
+1 to 8 for 301 to 308; rows 9 to 38 for 400 to 429; and rows 39 to 52 for 494 to
+507. A code between the spans, such as 444, and a code outside them altogether
+both answer 0.
+
+A span covers every code in its range, whether the registry describes it or not,
+because the rows follow the shape of the table of bodies rather than the
+membership of the registry: the row for [498](#registry-membership) holds the
+404 page although no row of the registry describes 498. Two checks hold the two
+apart from drifting. The table of bodies is `sizeof`-asserted against
+`NGX_HTTP_STATUS_ERROR_PAGE_ROWS`, so a row added to it or taken from it fails
+to compile; and `ngx_http_status_init()` walks the spans, derives the row count
+and the first client error row from them, and refuses the configuration if
+either disagrees with the constant, so a bound edited on its own is refused
+rather than silently obeyed.
+
 ### Footprint
 
-The registry is static data: two arrays and the three words of state that go
-with them, written only while a configuration is being parsed — which is
-strictly before workers fork — and read only afterwards.
+The registry is static data: the two arrays a status is described by, the three
+words of state that go with them, and the constant table of spans an error page
+row is resolved from. The arrays and the state are written only while a
+configuration is being parsed — which is strictly before workers fork — and read
+only afterwards; the span table is written at compile time and never again.
 
 | Object | Entries | Entry size (LP64) | Bytes |
 | ------ | ------- | ----------------- | ----- |
 | `ngx_http_status_defs[]` | 64 | 40, one `ngx_http_status_def_t` | 2,560 |
 | `ngx_http_status_index[]` | 500 | 2, one `u_short` | 1,000 |
+| **the two arrays alone** | | | **3,560** |
 | the state beside them | 3 | 8, one `ngx_uint_t` | 24 |
-| **Total** | | | **3,584** |
+| **the two arrays and that state** | | | **3,584** |
+| `ngx_http_status_page_spans[]` | 4 | 16, two `ngx_uint_t` | 64 |
+| **Total** | | | **3,648** |
 
-On ILP32 a row measures 20 bytes and a word 4, which makes the same three
-objects 1,280, 1,000 and 12 bytes, or 2,292 in all. Either way the registry
-costs a fraction of the 10 KB it is allowed, and that is the whole of what it
-costs: nothing is allocated for a connection, and nothing for a request. The
-rows that select an error page body are a separate table, and belong to
-`src/http/ngx_http_special_response.c` rather than to the registry.
+The two figures are given separately because they answer different questions:
+**3,560 bytes** is what the registry's own two arrays occupy, and **3,584
+bytes** is that plus the 24 bytes of state held beside them — the count of rows
+in use, the sealed flag, and the flag that records the built-in rows have been
+indexed once for the process. On ILP32 a definition row measures 20
+bytes and a word 4, which makes the same objects 1,280 and 1,000 bytes, or
+**2,280** for the two arrays and **2,292** with the state; a span row measures 8
+bytes there, so the span table is 32 bytes and the whole is 2,324. Either way
+the registry costs a fraction of the 10 KB it is allowed, and that is the whole
+of what it costs: nothing is allocated for a connection, and nothing for a
+request. The span table is counted here because the rows an error page body is
+selected by are resolved by the registry, from bounds named in
+`src/http/ngx_http_status.h`, rather than by a table standing beside the bodies
+in `src/http/ngx_http_special_response.c`.
 
 Row zero of the definitions is a reserved sentinel, so that a zero in the index
 means "not described" and no second table has to record which codes are present.
@@ -539,15 +594,22 @@ for a registered row whose phrase is empty, as
 `ngx_http_status_is_cacheable()` returns zero for an unregistered code, which is
 the conservative answer.
 
-`ngx_http_status_expires_ok()`, declared in `src/http/ngx_http.h` beside the
-five published functions, answers the `EXPIRES_OK` question on the same terms,
-and returns zero for an unregistered code as well.
+Two more of the registry's answers are read the same way, by helpers that
+`src/http/ngx_http.h` declares beside the five published functions rather than
+among them: `ngx_http_status_expires_ok()` answers the `EXPIRES_OK` question on
+the same terms and returns zero for an unregistered code as well, and
+`ngx_http_status_error_page_index()` answers which row of the error page table a
+code selects, returning the zero length row for a code no span covers. Neither
+is part of the API a module writes against; the [migration
+guide](../migration/status_code_api.md#4-lifecycle-and-custom-registration)
+lists all six helpers and says which of them a module may call.
 
 No function hands out the address of a row: a caller reaches the value it asked
 after, reaches no member it did not ask after, and can alter no part of the
 registry. `flags` and `rfc_section` are read by the registry itself and are not
-published through an accessor of their own — the flags through the two helpers
-above, which each return a mask over one flag, and `rfc_section` not at all. A
+published through an accessor of their own — the flags through
+`ngx_http_status_is_cacheable()` and `ngx_http_status_expires_ok()`, which each
+answer over one flag, and `rfc_section` not at all. A
 caller that needs to know what a row records reads it from the tables on this
 page.
 
@@ -570,21 +632,33 @@ an upstream chose is stored directly, at the boundary it is relayed across, and
 a request that has an upstream attached is exempt from every check the setter
 makes on what it is given, on `r->upstream` and never on the number.
 
-That boundary is one of the three places where a store stays direct. Two more
-are the teardown paths: `ngx_http_terminate_request()` and
+That boundary is one of the **four call sites** where a store stays direct,
+which fall into **three categories**. Two of the four make up the second
+category, the teardown paths: `ngx_http_terminate_request()` and
 `ngx_http_free_request()` each store a status under their own guard, and set the
 bookkeeping bit beside it, purely so that the access log is given the status it
 was given — a code such as `NGX_HTTP_CLIENT_CLOSED_REQUEST`, which no response
 ever carries — because a request being torn down has nothing left to answer a
-refusal with. The third is the embedded Perl `send_http_header()`, which falls
-back to `NGX_HTTP_OK` for a script that set no status at all; a script that does
-set one goes through the setter, after the width of it has been checked.
+refusal with. The third category is the embedded Perl `send_http_header()`,
+which falls back to `NGX_HTTP_OK` for a script that set no status at all; a
+script that does set one goes through the setter, after the width of it has been
+checked.
 
-One further store is made inside the registry module rather than at a call site
-of it: `ngx_http_status_promote()` moves the error status of a request over its
-response status where `ngx_http_send_header()` finishes a response. It is not a
-status being chosen, and [strict validation](#strict-validation) says why it
-neither examines nor refuses what it moves.
+| Category | Call site | What it stores |
+| -------- | --------- | -------------- |
+| relayed | `ngx_http_upstream.c` | the status an upstream chose |
+| teardown | `ngx_http_terminate_request()` | the status the access log is to carry |
+| teardown | `ngx_http_free_request()` | the status the access log is to carry |
+| default | `nginx.xs`, `send_http_header()` | `NGX_HTTP_OK`, for a script that set none |
+
+Two further stores are made inside the registry module rather than at a call
+site of it, which makes six assignments to the response status in the whole of
+`src/http`: the one `ngx_http_status_set()` makes for the status it was given,
+and the one `ngx_http_status_promote()` makes where `ngx_http_send_header()`
+finishes a response, moving the error status of a request over its response
+status. The second is not a status being chosen, and
+[strict validation](#strict-validation) says why it neither examines nor refuses
+what it moves.
 
 It answers `NGX_ERROR` in one case, and a caller is expected to act on that:
 
@@ -760,14 +834,19 @@ released, which a worker then reads while writing a status line.
 ## See also
 
 - `src/http/ngx_http.h` — where the five functions of the API are declared, so
-  that every file that includes it can reach them, and where the five helpers
-  the HTTP core and its own modules use are declared beside them,
-  `ngx_http_status_expires_ok()` and the `ngx_http_status_promote()` seam among
-  them; `ngx_http_status_effective()` takes a request, so declaring the helpers
-  with the record type instead would make that header depend on this one. None
-  of the five helpers is part of the API a module writes against
+  that every file that includes it can reach them, and where the six helpers
+  the HTTP core and its own modules use are declared beside them:
+  `ngx_http_status_init()`, `ngx_http_status_seal()`, the
+  `ngx_http_status_promote()` seam, `ngx_http_status_effective()`,
+  `ngx_http_status_expires_ok()` and `ngx_http_status_error_page_index()`.
+  `ngx_http_status_effective()` takes a request, so declaring the helpers with
+  the record type instead would make that header depend on this one. None of the
+  six helpers is part of the API a module writes against, and every function the
+  registry defines is declared in this one file
 - `src/http/ngx_http_status.h` — the record type, the six flags, the range
-  constants and the range macro, and the bound the wire imposes. It declares no
+  constants and the range macro, the bound the wire imposes, and the bounds of
+  the three spans of consecutive codes an error page body is held for, with the
+  row count and the first client error row derived from them. It declares no
   function, which is what lets it depend on no other header and be included on
   its own from anywhere
 - [Status Code API migration guide](../migration/status_code_api.md) — how a

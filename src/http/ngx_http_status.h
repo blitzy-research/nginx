@@ -91,6 +91,63 @@ typedef struct {
     ((s) < NGX_HTTP_STATUS_WIRE_MAX)
 
 
+/*
+ * The compiled in error page bodies of ngx_http_special_response.c are held in
+ * a table of a zero length row followed by three spans of consecutive status
+ * codes, and which row a status code selects is registry knowledge like any
+ * other: ngx_http_status_error_page_index() answers it, and these are the
+ * bounds it answers from, each the half open range [FIRST, LIMIT) of the codes
+ * one span covers.  They cover 301 through 308, that is
+ * NGX_HTTP_MOVED_PERMANENTLY through NGX_HTTP_PERMANENT_REDIRECT, then 400
+ * through 429, NGX_HTTP_BAD_REQUEST through NGX_HTTP_TOO_MANY_REQUESTS, and
+ * then 494 through 507, NGX_HTTP_NGINX_CODES through
+ * NGX_HTTP_INSUFFICIENT_STORAGE.  The bounds are written as numbers because
+ * this header describes a status code without depending on anything else, and
+ * the constants that name them belong to ngx_http_request.h.
+ *
+ * They are the one place that shape is written down.  The spans the registry
+ * walks are built from them, the two constants below are derived from them, and
+ * ngx_http_status_init() derives those same two from the spans themselves and
+ * refuses the configuration should the two ever disagree, so that editing a
+ * span is enough and editing one without the other is not silently accepted.
+ */
+
+#define NGX_HTTP_STATUS_ERROR_PAGE_3XX_FIRST   301
+#define NGX_HTTP_STATUS_ERROR_PAGE_3XX_LIMIT   309
+#define NGX_HTTP_STATUS_ERROR_PAGE_4XX_FIRST   400
+#define NGX_HTTP_STATUS_ERROR_PAGE_4XX_LIMIT   430
+#define NGX_HTTP_STATUS_ERROR_PAGE_49X_FIRST   494
+#define NGX_HTTP_STATUS_ERROR_PAGE_49X_LIMIT   508
+
+
+/*
+ * The rows those spans account for, which is the number of rows that table
+ * holds: the table is sized by the rows written out in it, and an assertion
+ * beside them holds that size to this.
+ */
+
+#define NGX_HTTP_STATUS_ERROR_PAGE_ROWS                                       \
+    (1 + (NGX_HTTP_STATUS_ERROR_PAGE_3XX_LIMIT                                \
+          - NGX_HTTP_STATUS_ERROR_PAGE_3XX_FIRST)                             \
+       + (NGX_HTTP_STATUS_ERROR_PAGE_4XX_LIMIT                                \
+          - NGX_HTTP_STATUS_ERROR_PAGE_4XX_FIRST)                             \
+       + (NGX_HTTP_STATUS_ERROR_PAGE_49X_LIMIT                                \
+          - NGX_HTTP_STATUS_ERROR_PAGE_49X_FIRST))
+
+
+/*
+ * The row the second span starts at, which is the row 400 selects and the first
+ * row that holds a 4XX or 5XX page rather than a redirect page or no page at
+ * all.  It is the one row a response path asks for by a constant instead of by
+ * a status, so writing it as one keeps that path from resolving a code it
+ * already knows.
+ */
+
+#define NGX_HTTP_STATUS_ERROR_PAGE_4XX_ROW                                    \
+    (1 + (NGX_HTTP_STATUS_ERROR_PAGE_3XX_LIMIT                                \
+          - NGX_HTTP_STATUS_ERROR_PAGE_3XX_FIRST))
+
+
 #if (NGX_HTTP_STATUS_VALIDATION)
 
 /*

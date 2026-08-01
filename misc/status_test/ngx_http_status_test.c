@@ -11,10 +11,13 @@
 
 
 /*
- * A driver for the HTTP status code registry.  It exercises the five
- * functions the registry publishes through <ngx_http.h>, the five it
- * publishes through its own header, the macros both of those headers define,
- * and the lifecycle that leaves the registry writable only while a
+ * A driver for the HTTP status code registry.  Every function the registry
+ * defines is declared in <ngx_http.h>: the five of the published API, and the
+ * six the HTTP core and its own modules use.  ngx_http_status.h, which reaches
+ * this file through that same aggregator, declares no function at all - it
+ * holds the record a definition is written as and the macros over a status
+ * code.  The driver exercises all eleven functions, the macros of both
+ * headers, and the lifecycle that leaves the registry writable only while a
  * configuration is parsed.
  *
  * The driver is linked against the object tree of a build of nginx by the
@@ -108,6 +111,8 @@ static ngx_int_t ngx_http_status_test_signatures(void);
 static ngx_int_t ngx_http_status_test_signatures_write(void);
 static ngx_int_t ngx_http_status_test_helper_signatures(void);
 static ngx_int_t ngx_http_status_test_metadata_signatures(void);
+static ngx_uint_t ngx_http_status_test_row(ngx_uint_t code);
+static ngx_int_t ngx_http_status_test_error_page_rows(void);
 static ngx_int_t ngx_http_status_test_complete(void);
 static ngx_int_t ngx_http_status_test_undescribed(void);
 static ngx_int_t ngx_http_status_test_reasons(void);
@@ -761,7 +766,13 @@ ngx_http_status_test_signatures_write(void)
 }
 
 
-/* the same again, for the three of its own header that run the lifecycle */
+/*
+ * The same again for three of the six helpers <ngx_http.h> declares beside the
+ * published API: the two that run the lifecycle, and the one the log module and
+ * the variable evaluator read an effective status through.
+ * ngx_http_status_promote() is taken through a pointer of its declared type as
+ * well, where what it is gated on is examined.
+ */
 
 static ngx_int_t
 ngx_http_status_test_helper_signatures(void)
@@ -807,13 +818,7 @@ ngx_http_status_test_helper_signatures(void)
 }
 
 
-/*
- * and for the one of its own header that answers about a code.  The row of the
- * error page table a code selects is not among them: that mapping belongs to
- * ngx_http_special_response.c, which is the only thing that reads it, and it
- * is checked there instead, at compile time against the number of rows the
- * table holds and over the wire against the body each row carries.
- */
+/* and for the two of those six that answer about a code */
 
 static ngx_int_t
 ngx_http_status_test_metadata_signatures(void)
@@ -821,10 +826,12 @@ ngx_http_status_test_metadata_signatures(void)
     ngx_int_t  rc;
 
     ngx_uint_t  (*expires)(ngx_uint_t status);
+    ngx_uint_t  (*row)(ngx_uint_t status);
 
     rc = NGX_OK;
 
     expires = ngx_http_status_expires_ok;
+    row = ngx_http_status_error_page_index;
 
     ngx_http_status_test_assert(rc, expires(NGX_HTTP_OK) != 0,
                                 "ngx_http_status_expires_ok() did not answer "
@@ -833,6 +840,93 @@ ngx_http_status_test_metadata_signatures(void)
     ngx_http_status_test_assert(rc, expires(NGX_HTTP_NOT_FOUND) == 0,
                                 "ngx_http_status_expires_ok() did not answer "
                                 "zero for 404 through its pointer");
+
+    ngx_http_status_test_assert(rc,
+                          row(NGX_HTTP_BAD_REQUEST)
+                          == NGX_HTTP_STATUS_ERROR_PAGE_4XX_ROW,
+                          "ngx_http_status_error_page_index() did not answer "
+                          "the row 400 selects through its pointer");
+
+    ngx_http_status_test_assert(rc, row(NGX_HTTP_OK) == 0,
+                                "ngx_http_status_error_page_index() did not "
+                                "answer the zero length row for 200 through "
+                                "its pointer");
+
+    return rc;
+}
+
+
+/*
+ * The row of the error page table of ngx_http_special_response.c that each
+ * status code selects, over every code that could reach it and not a sample of
+ * them, against an expectation written out here from the three spans of that
+ * table rather than derived from the registry's own bounds, so that a bound
+ * edited in the registry is not asserted against itself.
+ */
+
+static ngx_uint_t
+ngx_http_status_test_row(ngx_uint_t code)
+{
+    if (code >= 301 && code <= 308) {
+        return code - 300;               /* the first eight rows */
+    }
+
+    if (code >= 400 && code <= 429) {
+        return code - 391;               /* 400 selects the ninth */
+    }
+
+    if (code >= 494 && code <= 507) {
+        return code - 455;               /* 494 selects the thirty-ninth */
+    }
+
+    return 0;                            /* the zero length row */
+}
+
+
+static ngx_int_t
+ngx_http_status_test_error_page_rows(void)
+{
+    ngx_int_t   rc;
+    ngx_uint_t  code, first, rows, wrong;
+
+    rc = NGX_OK;
+    first = 0;
+    rows = 0;
+    wrong = 0;
+
+    /* past the codes a status line may carry, so that no code is untested */
+
+    for (code = 0; code < 2000; code++) {
+
+        if (ngx_http_status_error_page_index(code)
+            != ngx_http_status_test_row(code))
+        {
+            if (wrong == 0) {
+                first = code;
+            }
+
+            wrong++;
+        }
+
+        if (ngx_http_status_test_row(code) > rows) {
+            rows = ngx_http_status_test_row(code);
+        }
+    }
+
+    ngx_http_status_test_assert_code(rc, wrong == 0,
+                          "selects the wrong row of the error page table",
+                          first);
+
+    ngx_http_status_test_assert(rc,
+                          rows + 1 == NGX_HTTP_STATUS_ERROR_PAGE_ROWS,
+                          "the rows the spans account for are not the rows "
+                          "the error page table is declared with");
+
+    ngx_http_status_test_assert(rc,
+                          NGX_HTTP_STATUS_ERROR_PAGE_4XX_ROW
+                          == ngx_http_status_test_row(NGX_HTTP_BAD_REQUEST),
+                          "the row a response path asks for by a constant is "
+                          "not the row 400 selects");
 
     return rc;
 }
@@ -3010,9 +3104,9 @@ static ngx_http_status_test_case_t  ngx_http_status_test_cases[] = {
     { ngx_http_status_test_signatures_write,
       "the published prototypes that write", 1 },
     { ngx_http_status_test_helper_signatures,
-      "the prototypes of its own header that run the lifecycle", 1 },
+      "the prototypes beside the API that run the lifecycle", 1 },
     { ngx_http_status_test_metadata_signatures,
-      "the prototypes of its own header that answer about a code", 1 },
+      "the prototypes beside the API that answer about a code", 1 },
     { ngx_http_status_test_complete, "every code that must be described", 1 },
     { ngx_http_status_test_undescribed,
       "every code that must not be described", 1 },
@@ -3027,6 +3121,8 @@ static ngx_http_status_test_case_t  ngx_http_status_test_cases[] = {
     { ngx_http_status_test_difference,
       "how far those two sets differ", 1 },
     { ngx_http_status_test_internal, "nginx's own codes", 1 },
+    { ngx_http_status_test_error_page_rows,
+      "the row of the error page table a code selects", 1 },
     { ngx_http_status_test_register, "registration", 1 },
     { ngx_http_status_test_register_refuses,
       "the registrations that are refused", 1 },

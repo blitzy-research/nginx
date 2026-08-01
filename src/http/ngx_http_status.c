@@ -22,6 +22,7 @@
 
 static ngx_http_status_def_t *ngx_http_status_lookup(ngx_uint_t status);
 static void ngx_http_status_discard(void);
+static ngx_int_t ngx_http_status_page_check(void);
 
 
 /*
@@ -533,12 +534,23 @@ ngx_http_status_register(ngx_http_status_def_t *def)
  * page a worker shares with the master is written after that worker forked.
  * What a configuration can change is what its own modules registered, and only
  * a configuration that registered something has anything to discard.
+ *
+ * The spans that map a status code to a row of the error page table are checked
+ * for every configuration, because spans that reach past the rows that table
+ * holds, or that no longer start where the response paths expect them to, are
+ * to be refused while a configuration is parsed rather than answered from once
+ * a request arrives.  The check walks three spans, and what it costs is paid
+ * once per configuration parsed and never per request.
  */
 
 ngx_int_t
 ngx_http_status_init(ngx_conf_t *cf)
 {
     ngx_uint_t  code, i;
+
+    if (ngx_http_status_page_check() != NGX_OK) {
+        return NGX_ERROR;
+    }
 
     ngx_http_status_sealed = 0;
 
@@ -649,4 +661,115 @@ ngx_http_status_expires_ok(ngx_uint_t status)
     }
 
     return def->flags & NGX_HTTP_STATUS_EXPIRES_OK;
+}
+
+
+/*
+ * One span of consecutive status codes that the error page table of
+ * ngx_http_special_response.c holds a row for, each the half open range of the
+ * codes it covers, in ascending order and followed by an empty span.  A code
+ * selects a row by locating the span that covers it and adding its offset
+ * within that span to the row at which that span starts, so a span records only
+ * the codes it covers and the row it starts at follows from the spans before
+ * it.  This is what the four offsets into that table that were maintained by
+ * hand beside its rows used to say, and the bounds the spans are built from are
+ * written once, in ngx_http_status.h.
+ */
+
+typedef struct {
+    ngx_uint_t   first;                  /* first status code of the span */
+    ngx_uint_t   last;                   /* one past the last status code */
+} ngx_http_status_page_span_t;
+
+
+static const ngx_http_status_page_span_t  ngx_http_status_page_spans[] = {
+    { NGX_HTTP_STATUS_ERROR_PAGE_3XX_FIRST,
+      NGX_HTTP_STATUS_ERROR_PAGE_3XX_LIMIT },
+    { NGX_HTTP_STATUS_ERROR_PAGE_4XX_FIRST,
+      NGX_HTTP_STATUS_ERROR_PAGE_4XX_LIMIT },
+    { NGX_HTTP_STATUS_ERROR_PAGE_49X_FIRST,
+      NGX_HTTP_STATUS_ERROR_PAGE_49X_LIMIT },
+    { 0, 0 }
+};
+
+
+/*
+ * The row of the error page table that a status code selects.  A code that no
+ * span covers, whether it falls between the spans as 444 does or lies outside
+ * them altogether, selects the zero length row.
+ *
+ * A span covers every code in its range, including a code the registry does not
+ * describe: the row for 498 holds the 404 page, which is how nginx answers a
+ * request whose host name is invalid, and the rows for the other codes the
+ * registry does not describe hold no page at all.  The rows follow the shape of
+ * that table and not the membership of the registry, which is why this walks
+ * the spans instead of looking a definition up.
+ */
+
+ngx_uint_t
+ngx_http_status_error_page_index(ngx_uint_t status)
+{
+    ngx_uint_t                          row;
+    const ngx_http_status_page_span_t  *span;
+
+    row = 1;
+
+    for (span = ngx_http_status_page_spans; span->first; span++) {
+
+        if (status < span->first) {
+            break;
+        }
+
+        if (status < span->last) {
+            return row + (status - span->first);
+        }
+
+        row += span->last - span->first;
+    }
+
+    /* a code with no row of its own, so a zero length body */
+
+    return 0;
+}
+
+
+/*
+ * That the spans agree with the two constants derived from their bounds,
+ * derived here from the spans themselves rather than written out a second time,
+ * so that a span edited without them, and a span that is empty or out of order,
+ * is caught instead of quietly changing which row a code selects or how many
+ * rows are reached at all.  ngx_http_status_init() refuses the configuration
+ * when they disagree.
+ */
+
+static ngx_int_t
+ngx_http_status_page_check(void)
+{
+    ngx_uint_t                          prev, rows;
+    const ngx_http_status_page_span_t  *span;
+
+    prev = 0;
+    rows = 1;
+
+    for (span = ngx_http_status_page_spans; span->first; span++) {
+
+        if (span->first < prev || span->last <= span->first) {
+            return NGX_ERROR;
+        }
+
+        if (span->first == NGX_HTTP_STATUS_ERROR_PAGE_4XX_FIRST
+            && rows != NGX_HTTP_STATUS_ERROR_PAGE_4XX_ROW)
+        {
+            return NGX_ERROR;
+        }
+
+        prev = span->last;
+        rows += span->last - span->first;
+    }
+
+    if (rows != NGX_HTTP_STATUS_ERROR_PAGE_ROWS) {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
 }
