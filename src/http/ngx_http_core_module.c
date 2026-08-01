@@ -1848,19 +1848,21 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
 
 /*
  * The error status of a request is moved into the response here, over the
- * response status, and is set like any other status nginx chooses so that the
- * one setter remains the one way a response status is written.  A strict build
- * does not report it a second time, because it was reported where it was
- * chosen, by the gate in ngx_http_special_response_handler() or by
- * ngx_http_send_error_page(), and the record kept on the request is what says
- * so.  The status line is cleared after the store and not by it, the setter not
- * touching the status line, so that the promoted status is not sent under the
- * status line of the one it replaced.
+ * response status, and this is the last point a response passes through on its
+ * way to the filter chain that emits it.  The move is made with
+ * ngx_http_status_promote() and not with ngx_http_status_set(), because there
+ * is nowhere further to carry a result to: the status being moved was examined
+ * where it was chosen, by the gate in ngx_http_special_response_handler() or by
+ * ngx_http_send_error_page(), and where such a gate reported a status the
+ * registry does not describe it deliberately let it stand, having no caller of
+ * its own to answer a refusal to.  Refusing the move would take that response
+ * away again and leave a request that had already gone wrong with no response
+ * at all.  The setter is what examines a status being chosen, and it refuses
+ * every status the registry does not describe; nothing is chosen here.
  *
- * A refusal here is answered by refusing to send the response: this is the last
- * point a response passes through on its way to the filter chain that emits it,
- * so there is nowhere further to carry a result to.  In a build without
- * validation the setter refuses nothing, so this is the store and the clear.
+ * The status line is cleared after the store and not by it, neither the
+ * promotion nor the setter touching the status line, so that the promoted
+ * status is not sent under the status line of the one it replaced.
  */
 
 ngx_int_t
@@ -1877,11 +1879,7 @@ ngx_http_send_header(ngx_http_request_t *r)
     }
 
     if (r->err_status) {
-        if (ngx_http_status_set(r, (ngx_uint_t) r->err_status) != NGX_OK) {
-            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                          "invalid status");
-            return NGX_ERROR;
-        }
+        ngx_http_status_promote(r);
 
         r->headers_out.status_line.len = 0;
     }

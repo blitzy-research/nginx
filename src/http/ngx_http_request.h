@@ -583,6 +583,12 @@ struct ngx_http_request_s {
      * they live in is private to a request, so no thread local storage is
      * needed
      *
+     * status_reported is read in one place only, by ngx_http_status_report(),
+     * and all it decides is that one line is written to the log for a request
+     * however many statuses that request is refused.  Neither it nor
+     * status_final grants a status anything: every status ngx_http_status_set()
+     * is given is examined, whatever has been written for the request already
+     *
      * they are added unconditionally, and not only in a build configured with
      * --with-http_status_validation, so that the layout of this structure
      * never depends on a build option; and they are added at the end of this

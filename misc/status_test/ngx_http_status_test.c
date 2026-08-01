@@ -155,6 +155,7 @@ static ngx_int_t ngx_http_status_test_set_reports(void);
 static ngx_int_t ngx_http_status_test_set_wide_reports(void);
 static ngx_int_t ngx_http_status_test_set_relayed(void);
 static ngx_int_t ngx_http_status_test_set_mixed(void);
+static ngx_int_t ngx_http_status_test_promote_gated(void);
 #endif
 static ngx_int_t ngx_http_status_test_run(void);
 
@@ -2348,18 +2349,22 @@ ngx_http_status_test_set_undescribed(void)
 /*
  * Moving the error status of a request over its response status, which is what
  * ngx_http_send_header() does last of all before the filters run and which is
- * therefore the last status any response carries.  There is no second entry
- * point for it: it is set through ngx_http_status_set() like any other status,
- * so that the one place a policy is applied stays one place.
+ * therefore the last status any response carries.  The move is made with
+ * ngx_http_status_promote(): the one thing in the module that writes a status
+ * without examining it, not part of the API a module writes against, and
+ * reached from one place in the HTTP core.  A module with a status to choose
+ * calls ngx_http_status_set(), which examines every status it is given.
  *
- * What is asked of it here is that setting it writes the response status and
- * the record on the request and writes nothing else -- in particular that the
- * error status it was taken from is left where it was, the access log reading
- * that member rather than the response status -- and that a status already
- * examined where it was chosen is not reported a second time when it is moved.
- * The status line, which ngx_http_send_header() clears around this so that the
- * promoted status is not sent with the phrase of the status it replaced, is not
- * written by the setter either.
+ * What is asked of the move here is that it writes the response status and the
+ * record on the request and writes nothing else -- in particular that the error
+ * status it was taken from is left where it was, the access log reading that
+ * member rather than the response status, and that the status line is left for
+ * ngx_http_send_header() to clear so that the promoted status is not sent with
+ * the phrase of the status it replaced -- and that it neither reports nor
+ * refuses what it moves.  A status the registry does not describe reaches it
+ * only because a gate reported that status and deliberately let it stand, and
+ * taking it away again would leave a request that had already gone wrong with
+ * no response at all rather than with a worse one.
  */
 
 static ngx_int_t
@@ -2375,9 +2380,10 @@ ngx_http_status_test_promote(void)
     r->err_status = NGX_HTTP_BAD_GATEWAY;
     ngx_str_set(&r->headers_out.status_line, "200 OK");
 
+    ngx_http_status_promote(r);
+
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, r->err_status) == NGX_OK
-                          && r->headers_out.status == NGX_HTTP_BAD_GATEWAY
+                          r->headers_out.status == NGX_HTTP_BAD_GATEWAY
                           && r->status_final == 1
                           && r->err_status == NGX_HTTP_BAD_GATEWAY
                           && r->headers_out.status_line.len
@@ -2388,26 +2394,24 @@ ngx_http_status_test_promote(void)
 
     /*
      * And a status the registry does not describe, which is what an error
-     * status that a gate reported and let stand is: it was examined where it
-     * was chosen, so moving it neither reports it a second time nor takes it
-     * away from the response, in either build.  Were it refused here, a request
-     * that had already gone wrong would be left with no response at all rather
-     * than with a worse one, which is the opposite of what the gate that let it
-     * stand was for.
+     * status a gate reported and let stand is: the move stores it, in either
+     * build, without reporting it a second time and without refusing it.
      */
 
     r = ngx_http_status_test_req();
     r->status_reported = 1;
     r->err_status = 599;
 
+    ngx_http_status_promote(r);
+
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, r->err_status) == NGX_OK
-                          && r->headers_out.status == 599
+                          r->headers_out.status == 599
                           && r->status_final == 1
                           && r->err_status == 599
+                          && r->status_reported == 1
                           && ngx_http_status_test_alerts == 0,
-                          "moving a status that had already been reported was "
-                          "refused, or was reported a second time");
+                          "moving a status that a gate had let stand did not "
+                          "store it, or reported it a second time");
 
     return rc;
 }
@@ -2711,11 +2715,12 @@ ngx_http_status_test_report_exempts(void)
  * is left as it was rather than replaced by one this build was configured to
  * object to.
  *
- * A request that has been reported has been examined, so a second status is
- * neither reported nor refused: reporting is once for a request, and a status
- * refused after one has already been reported would be a status a gate had
- * reported and let stand being taken away from the response by the move that
- * finishes it.
+ * Every call is examined, whatever has happened to the request before it: a
+ * second status the registry does not describe is refused as the first was, so
+ * that no sequence of calls arrives at a status this build was configured to
+ * object to.  What the record kept on the request decides is only how often
+ * such a status is written to the log, which is once for a request however many
+ * of that request's statuses are refused.
  */
 
 static ngx_int_t
@@ -2743,11 +2748,12 @@ ngx_http_status_test_set_reports(void)
                           "to");
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, 305) == NGX_OK
-                          && r->headers_out.status == 305
-                          && r->status_final == 1
+                          ngx_http_status_set(r, 305) == NGX_ERROR
+                          && r->headers_out.status == 0
+                          && r->status_final == 0
+                          && r->status_reported == 1
                           && ngx_http_status_test_alerts == 1,
-                          "a second such status was refused, or a request was "
+                          "a second such status was accepted, or a request was "
                           "reported more than once");
 
     r = ngx_http_status_test_req();
@@ -2790,19 +2796,20 @@ ngx_http_status_test_set_wide_reports(void)
                           "once as a status the registry does not describe");
 
     /*
-     * And a second status on the same request is neither reported nor refused
-     * again: one report is what a request gets, and refusing what has already
-     * been reported would refuse a status that a gate had let stand.
+     * And a second status on the same request is refused as the first was, one
+     * report being all a request gets however many of its statuses the setter
+     * refuses.
      */
 
     ngx_http_status_test_assert(rc,
                           ngx_http_status_set(r, 10 * NGX_HTTP_STATUS_WIRE_MAX)
-                          == NGX_OK
-                          && r->headers_out.status
-                             == 10 * NGX_HTTP_STATUS_WIRE_MAX
+                          == NGX_ERROR
+                          && r->headers_out.status == 0
+                          && r->status_final == 0
                           && r->status_reported == 1
                           && ngx_http_status_test_alerts == 1,
-                          "a request was reported or refused a second time");
+                          "a second status was accepted, or a request was "
+                          "reported more than once");
 
     return rc;
 }
@@ -2923,6 +2930,72 @@ ngx_http_status_test_set_mixed(void)
     return rc;
 }
 
+
+/*
+ * The gate and the move composed on one request, which is the sequence a
+ * response that has already gone wrong takes and the whole reason moving a
+ * status is separate from setting one.  The gate of
+ * ngx_http_special_response_handler() reports a status the registry does not
+ * describe and then deliberately lets it stand, having no caller of its own to
+ * answer a refusal to; ngx_http_send_header() moves that status into the
+ * response with ngx_http_status_promote(), which stores it without reporting it
+ * again and without the means to refuse it, so the response the gate exists to
+ * produce is still sent.  The seam is taken through a pointer here as the other
+ * prototypes are, it being declared in ngx_http.h beside the lifecycle helpers.
+ *
+ * And the setter, asked for another such status on that same request, refuses
+ * it still.  What the gate left on the request suppressed a second line in the
+ * log and granted nothing, which is the one thing this group is here to hold:
+ * a build in which that record granted a status would send, from the second
+ * call onward, exactly what it was configured to object to.
+ */
+
+static ngx_int_t
+ngx_http_status_test_promote_gated(void)
+{
+    ngx_int_t            rc;
+    ngx_http_request_t  *r;
+
+    void  (*promote)(ngx_http_request_t *r);
+
+    rc = NGX_OK;
+
+    promote = ngx_http_status_promote;
+
+    r = ngx_http_status_test_req();
+    r->headers_out.status = NGX_HTTP_OK;
+
+    ngx_http_status_test_gate(r, 599);
+
+    ngx_http_status_test_assert(rc,
+                          r->status_reported == 1
+                          && r->headers_out.status == NGX_HTTP_OK
+                          && ngx_http_status_test_alerts == 1,
+                          "the gate did not report the status once and leave "
+                          "the response as it found it");
+
+    r->err_status = 599;
+
+    promote(r);
+
+    ngx_http_status_test_assert(rc,
+                          r->headers_out.status == 599
+                          && r->status_final == 1
+                          && r->err_status == 599
+                          && ngx_http_status_test_alerts == 1,
+                          "moving the status the gate let stand did not store "
+                          "it, or reported it a second time");
+
+    ngx_http_status_test_assert(rc,
+                          ngx_http_status_set(r, 598) == NGX_ERROR
+                          && r->headers_out.status == 599
+                          && ngx_http_status_test_alerts == 1,
+                          "the setter accepted a status the registry does not "
+                          "describe because the request had been reported");
+
+    return rc;
+}
+
 #endif
 
 
@@ -2997,6 +3070,8 @@ static ngx_http_status_test_case_t  ngx_http_status_test_cases[] = {
       "the setter exempting a response an upstream answered", 1 },
     { ngx_http_status_test_set_mixed,
       "the two gates and the setter composed on one request", 1 },
+    { ngx_http_status_test_promote_gated,
+      "the gate and the move composed on one request", 1 },
 #endif
 
     { NULL, NULL, 0 }

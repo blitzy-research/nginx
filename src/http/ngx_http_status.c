@@ -317,11 +317,20 @@ ngx_http_status_lookup(ngx_uint_t status)
  *
  * A build configured with --with-http_status_validation looks for a status the
  * registry does not describe.  Such a status is perfectly sendable, so it is
- * reported once for the request and then refused before it is stored, so that
- * the caller's own error handling runs and answers the request as it answers
- * any other failure, and so that the status the request already carried is not
- * replaced by one that build was configured to object to.  The status is
- * examined once and that one answer decides both the report and the refusal.
+ * reported and then refused before it is stored, so that the caller's own error
+ * handling runs and answers the request as it answers any other failure, and so
+ * that the status the request already carried is not replaced by one that build
+ * was configured to object to.  A call looks at the status once, and that one
+ * answer decides both the report and the refusal.
+ *
+ * Every call looks, and a call is refused whenever the status it carries is one
+ * the registry does not describe.  What has already happened to the request
+ * decides nothing here: a status refused once and then set again, from the same
+ * caller or from another, is examined and refused again, so that no sequence of
+ * calls arrives at a status this build was configured to object to.  How often
+ * such a status is written to the log is a separate question, and the only one
+ * the record kept on the request answers: ngx_http_status_report() writes one
+ * line for a request however many statuses that request is refused.
  *
  * That search is scoped to the origin of the response, by r->upstream, and not
  * to the value of the status: a request answered from an upstream is relayed
@@ -338,16 +347,9 @@ ngx_http_status_lookup(ngx_uint_t status)
  * result to act on; the other two are what answers a request that has already
  * gone wrong.
  *
- * A request whose status has already been reported is a request whose status
- * was already examined, at whichever of those three points chose it, and it is
- * neither examined nor refused here again.  That is what lets the error status
- * of a request be moved into the response over the response status, in
- * ngx_http_send_header(), through this one function and not around it: a status
- * that a gate reported and deliberately let stand is not then taken away from
- * the response by the move that finishes it, which would leave a request that
- * had already gone wrong with no response at all rather than with a worse one.
- * It is also what keeps one request from being reported more than once when a
- * status it was refused is followed by another the registry does not describe.
+ * Moving the error status of a request into the response afterwards is not a
+ * status being chosen and does not come here at all: ngx_http_status_promote()
+ * is what ngx_http_send_header() moves it with, for the reason given there.
  *
  * The setter is a function that is called in either build, so that a module
  * compiled against one build of nginx behaves in another exactly as a module
@@ -359,10 +361,7 @@ ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
 {
 #if (NGX_HTTP_STATUS_VALIDATION)
 
-    if (!r->status_reported
-        && r->upstream == NULL
-        && !ngx_http_status_present(status))
-    {
+    if (r->upstream == NULL && !ngx_http_status_present(status)) {
         ngx_http_status_report(r, status);
 
         return NGX_ERROR;
@@ -385,6 +384,43 @@ ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
     r->status_final = 1;
 
     return NGX_OK;
+}
+
+
+/*
+ * Moves the error status of a request into the response, over the response
+ * status, which is what ngx_http_send_header() does last of all before the
+ * filters that emit a response run.  It writes the same two members
+ * ngx_http_status_set() writes and nothing else; the status line, which the
+ * promoted status must not be sent under, is cleared by its caller and not by
+ * this, the members this writes being the members the setter writes.
+ *
+ * It is not a second way to choose a status and is not part of the API a module
+ * uses: the HTTP core calls it from one place, for one status, and a module
+ * with a status to set calls ngx_http_status_set() as everything else does.
+ *
+ * The status it moves has been examined already, at whichever point chose it:
+ * every write of r->err_status is in ngx_http_special_response.c, and the two
+ * that carry a status from outside that file -- the status a handler returned
+ * and the status an error_page directive supplied -- each pass a gate that
+ * examines it first.  A status the registry does not describe reaches here only
+ * because one of those gates reported it and deliberately let it stand, having
+ * no caller of its own to answer a refusal to, so this cannot refuse it and
+ * does not examine it: refusing it here would take away the very response the
+ * gate that let it stand exists to produce, leaving a request that had already
+ * gone wrong with no response at all rather than with a worse one.
+ *
+ * That is why this stands beside the setter rather than as a condition inside
+ * it.  The setter refuses every status the registry does not describe, whatever
+ * has happened to the request before it, and this one place has a status that
+ * was examined elsewhere to move and no error path to move it by.
+ */
+
+void
+ngx_http_status_promote(ngx_http_request_t *r)
+{
+    r->headers_out.status = (ngx_uint_t) r->err_status;
+    r->status_final = 1;
 }
 
 

@@ -11,11 +11,12 @@ a status line, the effective `$status` value that the log module and the
 variable evaluator both need, the `expires` eligibility of a response, and the
 setting of a response status, which goes through `ngx_http_status_set()` where
 nginx chooses a status for a response of its own. Direct stores of the response
-status are kept in three places outside that last one, and [setting a
-status](#setting-a-status) says what each is: an upstream's status relayed into
-the response, the two teardown stores made only so that the access log has a
-status, and the `NGX_HTTP_OK` the embedded Perl `send_http_header()` falls back
-to for a script that set none.
+status are kept in three places outside that last one, plus one the registry
+module makes itself, and [setting a status](#setting-a-status) says what each
+is: an upstream's status relayed into the response, the two teardown stores made
+only so that the access log has a status, the `NGX_HTTP_OK` the embedded Perl
+`send_http_header()` falls back to for a script that set none, and the move that
+finishes a response.
 
 What the registry does not hold stays where it is. The status constants in
 `src/http/ngx_http_request.h` are unchanged and remain the way a module names a
@@ -579,6 +580,12 @@ refusal with. The third is the embedded Perl `send_http_header()`, which falls
 back to `NGX_HTTP_OK` for a script that set no status at all; a script that does
 set one goes through the setter, after the width of it has been checked.
 
+One further store is made inside the registry module rather than at a call site
+of it: `ngx_http_status_promote()` moves the error status of a request over its
+response status where `ngx_http_send_header()` finishes a response. It is not a
+status being chosen, and [strict validation](#strict-validation) says why it
+neither examines nor refuses what it moves.
+
 It answers `NGX_ERROR` in one case, and a caller is expected to act on that:
 
 ```c
@@ -590,8 +597,9 @@ if (ngx_http_status_set(r, NGX_HTTP_OK) != NGX_OK) {
 
 That case arises only in a build configured with
 `--with-http_status_validation`, and only for a status the registry does not
-describe on a request that has neither an upstream attached nor a status already
-reported; it is described below. A build without the switch answers `NGX_OK` for
+describe on a request that has no upstream attached; it is described below.
+Every call is examined, so such a status is refused however many statuses that
+request has been given already. A build without the switch answers `NGX_OK` for
 every status, whatever its value and however wide it is, and the whole of the
 function is two stores. The wrapper is written all the same, so that a module
 compiled against one build behaves in the other, and it costs a branch that the
@@ -625,14 +633,27 @@ send, because they are what answers a request that has already gone wrong, and
 refusing there would leave it with no response rather than with a worse one. No
 status is ever rewritten to a different one at any of the three.
 
-A request whose status has already been reported is a request whose status has
-already been examined, and the setter neither examines nor refuses it again.
-That is what lets the last thing `ngx_http_send_header()` does — move the error
-status of a request over its response status — go through the setter and not
-around it: a status that one of the two gates reported and deliberately let
-stand is not then taken away from the response by the move that finishes it. It
-is also why one request is one line in the log even when a status it was refused
-is followed by another the registry does not describe.
+Reporting is once for a request; refusal is once for a call. The two are
+separate, and the record kept on the request decides only the first of them: it
+holds the log to one line however many of that request's statuses are refused,
+and it grants nothing. Every call to `ngx_http_status_set()` examines the status
+it is given, whatever was chosen for the request before it, so a status refused
+once and then set again — from the same caller or from another — is examined and
+refused again. A build in which a report granted a status would send, from the
+second call onward, exactly what asking for the switch asked it to object to.
+
+Moving the error status of a request over its response status, which is the last
+thing `ngx_http_send_header()` does before the filters run, is therefore not a
+status being chosen and does not go through the setter. It is made with
+`ngx_http_status_promote()`, an internal seam declared in `ngx_http.h` beside
+the lifecycle helpers and reached from that one place: it makes the same two
+stores the setter makes and nothing else, examines nothing, reports nothing, and
+has no way to refuse. The status it moves was examined where it was chosen, and
+where one of the two gates reported a status the registry does not describe it
+deliberately let it stand — so taking that status away again at the move that
+finishes the response would leave a request which had already gone wrong with no
+response at all rather than with a worse one. A module never calls the seam; a
+module with a status to choose calls `ngx_http_status_set()`.
 
 A `return` directive falls on either side of that line, which is worth knowing
 before reading a log: nginx answers it with a response of its own, through the
@@ -739,11 +760,12 @@ released, which a worker then reads while writing a status line.
 ## See also
 
 - `src/http/ngx_http.h` — where the five functions of the API are declared, so
-  that every file that includes it can reach them, and where the four helpers
+  that every file that includes it can reach them, and where the five helpers
   the HTTP core and its own modules use are declared beside them,
-  `ngx_http_status_expires_ok()` among them; `ngx_http_status_effective()` takes
-  a request, so declaring the helpers with the record type instead would make
-  that header depend on this one
+  `ngx_http_status_expires_ok()` and the `ngx_http_status_promote()` seam among
+  them; `ngx_http_status_effective()` takes a request, so declaring the helpers
+  with the record type instead would make that header depend on this one. None
+  of the five helpers is part of the API a module writes against
 - `src/http/ngx_http_status.h` — the record type, the six flags, the range
   constants and the range macro, and the bound the wire imposes. It declares no
   function, which is what lets it depend on no other header and be included on

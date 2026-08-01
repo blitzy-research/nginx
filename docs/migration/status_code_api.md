@@ -87,7 +87,14 @@ teardown stores made only so that the access log has a status, which [a site
 that only records an already-decided
 status](#a-site-that-only-records-an-already-decided-status) sets out; and the
 `NGX_HTTP_OK` that the embedded Perl `send_http_header()` falls back to for a
-script that set no status at all. Nothing else in the tree writes that member.
+script that set no status at all.
+
+One further store is made by the registry module itself rather than at a call
+site of it: `ngx_http_status_promote()`, which moves the error status of a
+request over its response status where `ngx_http_send_header()` finishes a
+response, and which [a status that is merely being
+moved](#a-status-that-is-merely-being-moved) sets out. Nothing else in the tree
+writes that member.
 
 On success it writes exactly two members of the request: the response status
 `r->headers_out.status`, and `r->status_final = 1`, which records that a
@@ -102,13 +109,14 @@ It answers `NGX_ERROR` in one case, and it neither clamps, substitutes, nor
 silently rewrites a status:
 
 - **A status the registry does not describe**, in a build configured with
-  `--with-http_status_validation` only, and only for a status nginx originated
-  on a request that has not been reported already. It is reported at
+  `--with-http_status_validation` only, and only for a status nginx originated —
+  that is, one set on a request with no upstream attached. It is reported at
   `NGX_LOG_ALERT` as `unregistered HTTP status NNN` and `NGX_ERROR` is returned
   *before* the status is stored, so the request keeps whatever status it already
-  carried and the caller's own error handling answers it. A default build stores
-  such a status and answers `NGX_OK`, which is why what a default build sends is
-  unchanged.
+  carried and the caller's own error handling answers it. Every call is
+  examined, so this happens however many statuses that request has been given
+  already. A default build stores such a status and answers `NGX_OK`, which is
+  why what a default build sends is unchanged.
 
 How wide a status is has nothing to do with this. A status of four digits is a
 status the registry does not describe like any other: a default build stores it
@@ -117,13 +125,20 @@ breath as a narrower one it does not describe. The bound on width is the two
 header filters' own, as [scope and compatibility](#1-scope-and-compatibility)
 explains.
 
-A request whose status has already been reported is a request whose status has
-already been examined, and it is neither examined nor refused again. That is
-what lets `ngx_http_send_header()` move the error status of a request over its
-response status through this function rather than around it: a status one of
-[the two gates](#statuses-a-handler-returns) reported and deliberately let stand
-is not then taken away from the response by the move that finishes it. It is
-also why one request is one line in the log however many statuses it is given.
+Reporting is once for a request; refusal is once for a call. The bit the request
+carries decides only the first of them — it holds the log to one line however
+many of that request's statuses are refused — and it grants nothing. A status
+refused once and then set again, from the same caller or from another, is
+examined and refused again, so no sequence of calls arrives at a status a strict
+build was configured to object to.
+
+That is why `ngx_http_send_header()` moves the error status of a request over
+its response status with `ngx_http_status_promote()` and not with this function;
+see [a status that is merely being
+moved](#a-status-that-is-merely-being-moved). A status one of [the two
+gates](#statuses-a-handler-returns) reported and deliberately let stand is not
+taken away from the response by the move that finishes it, and it is not
+reported a second time either.
 
 It never refuses a status merely because `r->status_final` is already set. A
 status may legitimately be set again after a response has been decided, and a
@@ -432,9 +447,10 @@ always sent.
 A build configured with `--with-http_status_validation` additionally looks for a
 status that nginx or a configuration chose and that the registry does not
 describe, reports it at `NGX_LOG_ALERT` as `unregistered HTTP status NNN`, and —
-in the setter alone, and only for a request that has not been reported already —
-refuses it. The report is made once for a request rather than once per place, so
-a request whose status is chosen more than once produces one line in the log and
+in the setter alone — refuses it. The setter refuses every such status it is
+given, whatever the request has been given before it. The report, by contrast,
+is made once for a request rather than once per call or once per place, so a
+request whose status is chosen more than once produces one line in the log and
 not several.
 
 ### Validation is scoped to the origin of the response
@@ -465,9 +481,10 @@ holds at the gate in `ngx_http_send_error_page()`, which sees the status an
 `error_page ... =NNN` overwrite named. Both are what answers a request that has
 already gone wrong, so refusing there would leave it with no response at all
 rather than with a worse one. Only `ngx_http_status_set()` refuses, because only
-it has a caller with a result to act on, and it does not refuse a status a gate
-has already reported. No status is rewritten to a different one at any of the
-three.
+it has a caller with a result to act on, and it refuses every status the
+registry does not describe — including one a gate has already reported for the
+same request. What a gate leaves behind suppresses a second line in the log and
+nothing more. No status is rewritten to a different one at any of the three.
 
 ### `status_final` is a record, not a lock
 
@@ -588,29 +605,38 @@ store is not an alternative that is open.
 
 #### A status that is merely being moved
 
-There is no second entry point for a status that was already examined where it
-was chosen and is merely being moved into the response afterwards. The one such
-site in the tree, `ngx_http_send_header()` moving `err_status` over the response
-status, calls `ngx_http_status_set()` like every other:
+Moving a status that was already examined where it was chosen is not choosing a
+status, and it does not go through the setter. There is exactly one such site in
+the tree — `ngx_http_send_header()` moving `err_status` over the response status
+— and it is served by an internal seam, `ngx_http_status_promote()`, declared in
+`src/http/ngx_http.h` beside the lifecycle helpers:
 
 ```c
     if (r->err_status) {
-        if (ngx_http_status_set(r, (ngx_uint_t) r->err_status) != NGX_OK) {
-            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                          "invalid status");
-            return NGX_ERROR;
-        }
+        ngx_http_status_promote(r);
 
         r->headers_out.status_line.len = 0;
     }
 ```
 
-That works because the setter treats a request whose status has already been
-reported as a request whose status has already been examined, and neither
-examines nor refuses it again — so a status that one of the two gates reported
-and deliberately let stand is not taken away from the response by the move that
-finishes it. A module has nothing to do here: this is the core's own site, and a
-module converting a call site of its own wants the three-line wrapper above.
+The seam makes the same two stores the setter makes and nothing else. It
+examines nothing, reports nothing, and returns `void`, so it structurally cannot
+refuse. That is deliberate: the status it moves was examined where it was
+chosen, and where one of the two gates reported a status the registry does not
+describe it deliberately let it stand, having no caller of its own to answer a
+refusal to. Refusing the move would take away the very response that gate exists
+to produce and leave a request which had already gone wrong with no response at
+all rather than with a worse one.
+
+Keeping the move out of the setter is what lets the setter refuse **every**
+unregistered status it is given, whatever the request has been given before it.
+A setter that stood aside for an already-reported request would, from the second
+call onward, store exactly what a strict build was configured to object to.
+
+**A module never calls the seam.** It is not part of the API a module writes
+against: it exists for this one core site, for one status, and it is declared
+among the helpers precisely to say so. A module with a status to choose calls
+`ngx_http_status_set()` and uses the three-line wrapper above.
 
 ### Keep the side effects that were already there
 

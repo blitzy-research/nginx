@@ -22,8 +22,11 @@
 выключенного по умолчанию,
 можно проверять статусы, которые выбрал nginx
 или конфигурация и которые не описаны в реестре:
-такой статус записывается в лог ошибок,
-а установленный через ngx_http_status_set() ещё и не принимается,
+такой статус записывается в лог ошибок
+не более одного раза на запрос,
+а установленный через ngx_http_status_set()
+никогда не принимается,
+сколько бы раз он ни устанавливался,
 так что запрос завершается ошибкой 500;
 статусы, полученные от проксируемого сервера, не проверяются.
 </para>
@@ -41,8 +44,10 @@ are reserved for its digits;
 the --with-http_status_validation configure option,
 off by default, checks the statuses chosen by nginx
 or by a configuration and not described by the registry:
-such a status is reported to the error log,
-and one set through ngx_http_status_set() is also refused,
+such a status is reported to the error log
+at most once per request,
+and one set through ngx_http_status_set() is always refused,
+however many times it is set,
 so that the request is terminated with the 500 error;
 statuses relayed from proxied servers are never checked.
 </para>
