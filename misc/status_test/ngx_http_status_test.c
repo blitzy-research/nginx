@@ -408,6 +408,21 @@ static ngx_uint_t  ngx_http_status_test_range_want[] = {
 
 
 /*
+ * Status codes as a signed value, which is how the one caller that guards on
+ * the range receives one: the embedded Perl setter holds an IV, so a script may
+ * hand it a negative number, and the number is only widened to unsigned after
+ * the range has been asked about it.  An unsigned probe cannot express any of
+ * these, so the lower half of the macro's bound is reached by no other probe.
+ * Every one of them is out of range, and every one of them is refused once
+ * widened, the widening having turned it into a very large unsigned value.
+ */
+
+static ngx_int_t  ngx_http_status_test_signed_probe[] = {
+    -1, -100, -99999, -NGX_HTTP_STATUS_MAX, LONG_MIN
+};
+
+
+/*
  * Codes of the range that the registry does not describe, used to fill its
  * headroom until a registration is refused.  There are more of them than the
  * headroom holds, so that the refusal is observed rather than assumed.
@@ -2017,13 +2032,20 @@ ngx_http_status_test_headroom_reset(void)
  * Its bound is what the embedded Perl setter, the one caller that guards on it,
  * refuses a status a script chose outside of: a status below 100 and a status
  * of 600 or more, which as a consequence of the same bound is also every status
- * too wide for the three bytes an HTTP/2 or an HTTP/3 response reserves.
+ * too wide for the three bytes an HTTP/2 or an HTTP/3 response reserves.  Zero
+ * is out of that bound as well, and that setter admits it all the same, for a
+ * reason of its own that belongs to it and not to the macro.
+ *
+ * The bound is asked about from both sides.  A signed probe is asked as the
+ * setter asks, before any widening, which is the only way the lower side of the
+ * bound is reached; the same value is then handed to the registry widened, the
+ * way the setter hands it on, and has to be refused there too.
  */
 
 static ngx_int_t
 ngx_http_status_test_ranges(void)
 {
-    ngx_int_t   rc;
+    ngx_int_t   rc, scode;
     ngx_uint_t  code, i, n;
 
     rc = NGX_OK;
@@ -2043,6 +2065,22 @@ ngx_http_status_test_ranges(void)
                           == ngx_http_status_test_range_want[i],
                           "is not answered for as expected by the range "
                           "macro, whose upper bound is exclusive", code);
+    }
+
+    n = ngx_http_status_test_nelts(ngx_http_status_test_signed_probe);
+
+    for (i = 0; i < n; i++) {
+        scode = ngx_http_status_test_signed_probe[i];
+
+        ngx_http_status_test_assert(rc,
+                          !ngx_http_status_in_range(scode),
+                          "a negative status is answered for as in range");
+
+        ngx_http_status_test_assert(rc,
+                          ngx_http_status_validate((ngx_uint_t) scode)
+                          == NGX_ERROR,
+                          "a negative status widened to unsigned is not "
+                          "refused by the registry");
     }
 
     ngx_http_status_test_assert(rc,
