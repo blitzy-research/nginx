@@ -485,7 +485,15 @@ ngx_http_status_register(ngx_http_status_def_t *def)
  * built with: a built-in code outside the range the index covers, or two
  * built-in rows holding one code.  That is a fault in this file rather than in
  * the configuration being parsed, and it is refused while that configuration is
- * parsed rather than answered from once a request has arrived.
+ * parsed rather than answered from once a request has arrived.  Either fault is
+ * reported before it is answered, and names the code at fault, so that a row
+ * mistyped in this file is read from a log rather than deduced from a
+ * configuration that stopped without saying why.
+ *
+ * The report is written through cf, which is how a fault found while a
+ * configuration is being parsed is reported, and is passed over when there is
+ * no configuration to report against: this function is also driven directly,
+ * with a null cf, by the unit test.
  */
 
 ngx_int_t
@@ -505,10 +513,22 @@ ngx_http_status_init(ngx_conf_t *cf)
         code = ngx_http_status_defs[i].code;
 
         if (!ngx_http_status_in_range(code)) {
+            if (cf != NULL) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "built-in HTTP status %ui is outside the "
+                                   "range the registry index covers", code);
+            }
+
             return NGX_ERROR;
         }
 
         if (ngx_http_status_index[code - NGX_HTTP_STATUS_MIN] != 0) {
+            if (cf != NULL) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "built-in HTTP status %ui is defined by "
+                                   "more than one registry row", code);
+            }
+
             return NGX_ERROR;
         }
 
