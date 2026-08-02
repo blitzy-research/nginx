@@ -26,12 +26,12 @@ with the --with-http_status_validation configure option.
 <change type="change">
 <para lang="ru">
 теперь в методе $r->status() модуля ngx_http_perl_module
-код ответа вне диапазона от 100 до 599 считается ошибкой;
+отрицательный код ответа или код больше 999 считается ошибкой;
 код 0 по-прежнему допускается и означает,
 что код ответа задан не был.
 </para>
 <para lang="en">
-now a status code outside the range from 100 to 599 is considered
+now a negative status code or a status code greater than 999 is considered
 an error in the $r->status() method of the ngx_http_perl_module;
 the code 0 is still accepted and means that no status code has been set.
 </para>
