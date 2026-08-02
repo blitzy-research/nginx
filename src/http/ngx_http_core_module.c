@@ -3592,12 +3592,7 @@ ngx_http_core_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_str_t                name;
     ngx_http_server_name_t  *sn;
 
-    /*
-     * The values above are merged from the enclosing configuration, while the
-     * server names below are initialized only: the names of a server block
-     * belong to that block alone and are deliberately not inherited from the
-     * configuration that encloses it.
-     */
+    /* TODO: it does not merge, it inits only */
 
     ngx_conf_merge_size_value(conf->connection_pool_size,
                               prev->connection_pool_size, 64 * sizeof(void *));

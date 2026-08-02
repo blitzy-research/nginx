@@ -150,6 +150,15 @@ static ngx_int_t ngx_http_variable_time_local(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 
 /*
+ * TODO:
+ *     Apache CGI: AUTH_TYPE, PATH_INFO (null), PATH_TRANSLATED
+ *                 REMOTE_HOST (null), REMOTE_IDENT (null),
+ *                 SERVER_SOFTWARE
+ *
+ *     Apache SSI: DOCUMENT_NAME, LAST_MODIFIED, USER_NAME (file owner)
+ */
+
+/*
  * the $http_host, $http_user_agent, $http_referer, and $http_via
  * variables may be handled by generic
  * ngx_http_variable_unknown_header_in(), but for performance reasons
