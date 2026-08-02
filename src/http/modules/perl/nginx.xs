@@ -132,18 +132,31 @@ status(r, code)
      * which the HTTP/2 and HTTP/3 filters hold whatever wrote the status they
      * are given.
      *
-     * The bound is that range and nothing narrower: a script may name a status
-     * the registry does not describe, 418 among them, exactly as an error_page
-     * directive may, and nginx sends it.  Zero is not in the range: it is the
-     * value a request starts with, and send_http_header() answers with 200 for
-     * it.
+     * Zero is admitted, and is the one value outside that range which is.  It
+     * is the value a request carries before a status has been chosen, and it is
+     * also what SvIV() answers for an undefined argument and for one that is
+     * not a number at all, so a script that passes it is asking for the status
+     * the request already had rather than for a status of its own: the value is
+     * forwarded unchanged and send_http_header() answers 200 for it, exactly as
+     * it did before this bound existed.  Admitting it takes nothing away from
+     * what the bound is for, because zero written as three digits is "000" and
+     * fits the field an HTTP/2 or an HTTP/3 response reserves for it.
      *
-     * The test is made whatever the build, and not only in one configured with
-     * --with-http_status_validation, because what needs protecting is a
+     * Otherwise the bound is that range and nothing narrower: a script may name
+     * a status the registry does not describe, 418 among them, exactly as an
+     * error_page directive may, and a build without
+     * --with-http_status_validation sends it.  A build configured with that
+     * switch refuses every status the registry does not describe, zero
+     * included, so 418 and zero alike are refused there by
+     * ngx_http_status_set() below, and the script sees the croak that follows
+     * it rather than the response a build without the switch would send.
+     *
+     * The range test is made whatever the build, and not only in one configured
+     * with --with-http_status_validation, because what needs protecting is a
      * response and not only a build that was asked to validate.
      */
 
-    if (!ngx_http_status_in_range(code)) {
+    if (code != 0 && !ngx_http_status_in_range(code)) {
         croak("status(): invalid status code");
     }
 
