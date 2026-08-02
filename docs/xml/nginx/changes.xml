@@ -10,15 +10,41 @@
 <change type="change">
 <para lang="ru">
 теперь коды ответов HTTP управляются с помощью
-единого внутреннего реестра;
-строгую проверку кодов на соответствие RFC 9110
+единого внутреннего реестра кодов, которые отдаёт nginx;
+строгую проверку кодов по этому реестру
 можно включить с помощью параметра configure
 --with-http_status_validation.
 </para>
 <para lang="en">
-now HTTP status codes are managed using a unified internal registry;
-strict validation of status codes against RFC 9110 can be enabled
+now HTTP status codes are managed using a unified internal registry
+of the status codes nginx sends;
+strict validation of status codes against this registry can be enabled
 with the --with-http_status_validation configure option.
+</para>
+</change>
+
+<change type="change">
+<para lang="ru">
+теперь в методе $r->status() модуля ngx_http_perl_module
+код ответа вне диапазона от 100 до 599 считается ошибкой;
+код 0 по-прежнему допускается и означает,
+что код ответа задан не был.
+</para>
+<para lang="en">
+now a status code outside the range from 100 to 599 is considered
+an error in the $r->status() method of the ngx_http_perl_module;
+the code 0 is still accepted and means that no status code has been set.
+</para>
+</change>
+
+<change type="change">
+<para lang="ru">
+теперь при использовании HTTP/2 или HTTP/3
+код ответа больше 999 считается ошибкой.
+</para>
+<para lang="en">
+now a status code greater than 999 is considered an error
+when using HTTP/2 or HTTP/3.
 </para>
 </change>
 
@@ -28351,6 +28377,23 @@ the geo2nginx.pl script was added to contrib.
 the FastCGI parameters with the empty values now are passed to a server.
 </para>
 </change>
+
+<!--
+
+<change type="bugfix">
+<para lang="ru">
+при ошибках в работе с проксированным сервером или FastCGI сервером
+мог произойти segmentation fault;
+в режиме прокси ошибка появилась в 0.1.29.
+</para>
+<para lang="en">
+the segmentation fault may occurred if there were errors while
+working with proxied or FastCGI server;
+in the proxied mode the bug had appeared in 0.1.29.
+</para>
+</change>
+
+-->
 
 <change type="bugfix">
 <para lang="ru">
