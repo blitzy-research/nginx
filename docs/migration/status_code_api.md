@@ -24,12 +24,12 @@ change: no directive was added, renamed, or removed. The status constants in
 status; no existing function signature changed; no linker-visible symbol was
 removed. The registry is additive, and this is not a breaking change.
 
-A default build sends what it always sent. Every status line, every error page
-body, every `$status` value, and every HTTP/2 and HTTP/3 `:status` field is byte
-for byte what it was before the registry existed. Strict validation is a
-separate thing a build may be configured to do, with
-`--with-http_status_validation`, and it is off unless it is asked for; see
-[the strict build](#the-strict-build).
+A default build sends what it always sent, with the two exceptions named in the
+two paragraphs below. Every status line, every error page body, every `$status`
+value, and every HTTP/2 and HTTP/3 `:status` field is byte for byte what it was
+before the registry existed. Strict validation is a separate thing a build may
+be configured to do, with `--with-http_status_validation`, and it is off unless
+it is asked for; see [the strict build](#the-strict-build).
 
 One bound is new, and it belongs to two encodings rather than to the API: a
 status of four digits or more cannot be carried over HTTP/2 or HTTP/3, because
@@ -43,9 +43,19 @@ it, because how wide a status is written is not a fact about a status code.
 The embedded Perl `status()` method is bounded too, and more narrowly, because
 it is handed whatever integer a script passes and is the one place a status
 arrives from outside nginx at all. What bounds it is the range of the registry
-rather than a width: `ngx_http_status_in_range()` refuses a status below 100 or
-of 600 or more, which refuses every status too wide for either encoding along
-with it.
+rather than a width: every status below 100 except zero, and every status of 600
+or more, is refused by asking `ngx_http_status_in_range()`, which refuses every
+status too wide for either encoding along with them.
+
+Zero is the one value below 100 that method admits. It is the value a request
+already carries before a status has been chosen, and it is what `SvIV()` answers
+for an undefined argument and for one that is not a number at all, so a script
+that passes it is asking for the status the request already had: the value is
+forwarded unchanged, `send_http_header()` answers 200 for it, and that is what a
+default build did before this bound existed. Zero written as three digits is
+`000`, so admitting it takes nothing away from what the bound is for. A strict
+build refuses zero along with every other status the registry does not describe,
+and refuses it at `ngx_http_status_set()` rather than at the range test.
 
 It is deliberately not held where a status is chosen, so nothing about adopting
 this API narrows what a call site may ask for. An HTTP/1.x status line reserves
@@ -927,7 +937,11 @@ build is for development and conformance work, not for production traffic.
   transitively, with no include to add.
 - No `nginx.conf` directive was added, removed, or renamed.
 - Strict validation is chosen at build time and is off by default; a default
-  build behaves as it did.
+  build behaves as it did, except at the embedded Perl setter and the HTTP/2 and
+  HTTP/3 width bounds, both of which are unconditional and are described in
+  [scope and compatibility](#1-scope-and-compatibility) and in section 8,
+  [reason phrases and wire
+  compatibility](#8-reason-phrases-and-wire-compatibility).
 - One bit, `status_final:1`, is added to `ngx_http_request_t`, unconditionally
   rather than under the build option, and at the end of an existing bit field
   run where the compiler already had padding. The layout of the request
@@ -936,9 +950,94 @@ build is for development and conformance work, not for production traffic.
   of the same configuration, no member offset moves, and the module signature is
   identical between the two.
 - HTTP/1.x status lines, error page bodies, `$status`, and HTTP/2 and HTTP/3
-  `:status` output are byte compatible in a default build.
+  `:status` output are byte compatible in a default build for every status that
+  reaches an encoder. The two unconditional bounds above decide which statuses
+  do: a script may no longer set a status below 100, zero excepted, or one of
+  600 or more, and a status of four digits or more is no longer written into the
+  three bytes an HTTP/2 or HTTP/3 `:status` reserves. Neither bound changes the
+  bytes of any status that was already inside them.
 - What this work adds is registry metadata and the ability to validate against
   it. It adds no built-in status code and corrects no reason phrase.
+
+### What the registry does not back, and why
+
+Four places in the HTTP subsystem still answer a question about a status without
+reading the registry. Each is deliberate, each is behaviour-neutral, and each is
+recorded here so that a reader who expects the registry to be behind everything
+is not left to guess.
+
+**The four class flags have no reader.** `NGX_HTTP_STATUS_INFORMATIONAL`,
+`NGX_HTTP_STATUS_CLIENT_ERROR`, `NGX_HTTP_STATUS_SERVER_ERROR` and
+`NGX_HTTP_STATUS_INTERNAL` are set on every row that belongs to them, and no C
+code reads them. `ngx_http_status_is_cacheable()` reads `CACHEABLE` and
+`ngx_http_status_expires_ok()` reads `EXPIRES_OK`, and those two are the only
+flags any code reads anywhere in the tree; the C driver checks both of those
+memberships in full, code by code, through the two accessors that expose them,
+and it cannot reach the other four at all, because none of the five published
+functions hands out a row's `flags` and that surface is closed. They are checked
+all the same, by the `metadata` target of `misc/status_test/GNUmakefile`, which
+reads the registry source rather than running the driver and holds every row to
+carrying the flag of its class and no other, and the six codes nginx keeps for
+itself to being the six rows flagged internal.
+
+No read site was converted to a flag test either. The reason is that the reads a
+class flag could stand in for are not class tests: they are equality tests
+against one particular code — `status != NGX_HTTP_OK`,
+`status == NGX_HTTP_NO_CONTENT`, `status == NGX_HTTP_NOT_MODIFIED` — each
+selecting a specific encoding or a specific side effect, and a flag saying
+"some 2xx" or "some 4xx" cannot express any of them. Converting them would
+change what the code decides, which is the one thing this work must not do, so
+the conversion was deliberately deferred; deferring it changes no behaviour,
+because every one of those reads goes on deciding exactly what it decided
+before. The four flags are therefore metadata a future consumer may read, held
+correct by the `metadata` target until one does, and a reader for them would be
+an addition to the published surface that nothing yet needs. The six internal
+codes are accepted by strict validation because they are registry rows, not
+because of the flag, so nothing depends on the flag being read.
+
+**The error page row index is file-private.** `ngx_http_special_response.c`
+selects the row of its own body table with `ngx_http_error_page_index()` and a
+set of named `NGX_HTTP_ERROR_PAGE_*` span constants, not from the registry. The
+registry record has exactly the four members it was specified with — `code`,
+`reason`, `flags`, `rfc_section` — and none of them can carry an index into
+another module's table, and no published function hands out a row for a caller
+to extend. What the registry did remove there is the duplication: the offset
+macros that file used to define are gone, and with them the hazard that made
+them worth removing. All seven of them shared their names with seven macros in
+the header filter, and four of those seven pairs disagreed on the value —
+`NGX_HTTP_LAST_2XX` was 202 here and 207 there, and the three `OFF_` macros that
+chain off it came out 1, 9 and 39 here against 6, 14 and 44 there — so a reader
+who found one definition had no way of telling which of the two tables it was
+right for. The mapping now lives in one named function, called from the two
+places in that file which need it, with named spans in place of open-coded
+arithmetic.
+
+That trade is worth stating plainly, because the count of macros went up and not
+down: ten `NGX_HTTP_ERROR_PAGE_*` constants stand where seven stood before. What
+went down is what a reader has to hold in mind. Each of the ten names the span
+it bounds, all ten sit above the table rather than inside its initializer, and
+not one of them appears in any other file in the tree.
+
+**The HTTP/2 and HTTP/3 filters name no registry symbol.** Neither encoding
+carries a reason phrase at all: HPACK and QPACK both carry `:status` as a
+number, so there is nothing in either for `ngx_http_status_reason()` to supply,
+and the status tests that remain in those filters are the equality tests
+described above — a `switch` on the code in the HTTP/2 filter and a chain of
+comparisons in the HTTP/3 one — each selecting a static table index or one of
+the fused side effects that stay where they are. What both filters gained
+instead is the width bound described in
+[scope and compatibility](#1-scope-and-compatibility), which is theirs and is
+not a registry question.
+
+**The two 1xx status lines stay as constants.** `103 Early Hints` is
+`ngx_http_early_hints_status_line` in the header filter and `100 Continue` is a
+literal in `ngx_http_request_body.c`, and both are whole status lines: each
+carries the `HTTP/1.1 ` prefix, the number, the phrase and a trailing CRLF. A
+`reason` member is only the bytes that follow `HTTP/1.1 ` and carries no CRLF,
+so neither constant has the shape of one. Both codes are registry rows, with the
+zero-length `reason` every code nginx sends without a phrase from the table has;
+what is not in the registry is the line, not the code.
+
 
 ## 10. Adoption checklist
 

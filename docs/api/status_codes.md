@@ -112,11 +112,19 @@ without being a registry member. A build configured with the switch writes one
 alert for the request, reading `unregistered HTTP status 306`, and still sends
 that status wherever it arrives with no caller to answer to; the one place it
 refuses such a status is `ngx_http_status_set()`, which has a caller with a
-result to act on. No status is replaced by a different one either way, and how
-wide a status is has nothing to do with any of this: a status of four digits is
-a status the registry does not describe like any other, and is sent by a build
-without the switch exactly as 306 is. See
-[strict validation](#strict-validation) for the whole of that contract.
+result to act on. No status is replaced by a different one by validation either
+way.
+
+Two bounds that are not validation do refuse a status, and do so in every build.
+The embedded Perl `status()` method refuses a status below 100, zero excepted,
+and one of 600 or more, and the HTTP/2 and HTTP/3 header filters refuse a status
+of four digits or more because each reserves exactly three bytes for `:status`.
+A status refused at either of those does not reach the wire, so over those two
+encodings how wide a status is does matter. Over HTTP/1.x it does not: that
+status line reserves `NGX_INT_T_LEN` bytes, so a status of four digits is one
+the registry does not describe like any other and is sent by a build without the
+switch exactly as 306 is. See [strict validation](#strict-validation) for the
+whole of that contract.
 
 **498** looks like an omission and is not a member either. It appears in
 `src/http/ngx_http_request.h` only as a comment,
@@ -442,10 +450,16 @@ for the range of the registry rather than for a width: the `status()` method of
 the embedded Perl module, which is the one place a status arrives from outside
 nginx. An integer of a script's choosing is neither parsed from a response nor
 written by nginx, so it is the only value bounded by neither a parser nor a
-table. `ngx_http_status_in_range()` is what bounds it, so a status below 100 or
-of 600 or more is refused with `croak("status(): invalid status code")` — and
-every status too wide for either filter, being of 600 or more as well, is
-refused there with it.
+table. `ngx_http_status_in_range()` is what bounds it, so every status below 100
+except zero, and every status of 600 or more, is refused with
+`croak("status(): invalid status code")` — and every status too wide for either
+filter, being of 600 or more as well, is refused there with it. Zero is admitted
+because it is the value a request already carries before a status has been
+chosen, and is what `SvIV()` answers for an argument that is not a number at
+all: it is forwarded unchanged and `send_http_header()` answers `NGX_HTTP_OK`
+for it, which is what a build without the switch answered for it before this
+bound existed. A build configured with the switch refuses zero as well, at
+`ngx_http_status_set()` rather than at the range test.
 
 It is deliberately **not** tested where a status is chosen. An HTTP/1.x status
 line reserves `NGX_INT_T_LEN` bytes for the same number and carries any width,
@@ -628,7 +642,7 @@ That boundary is one of the **two call sites** where a store stays direct, which
 fall into **two categories**. The other is the embedded Perl
 `send_http_header()`, which falls back to `NGX_HTTP_OK` for a script that set no
 status at all; a script that does set one goes through the setter, after the
-integer it named has been held to the range of the registry.
+integer it named has been held to the range of the registry, zero excepted.
 
 | Category | Call site | What it stores |
 | -------- | --------- | -------------- |
