@@ -305,13 +305,31 @@ ngx_http_status_lookup(ngx_uint_t status)
  * three bytes for it hold their own bound, as does the status() method of the
  * embedded Perl module, which admits a status from outside nginx.
  *
- * A build configured with the switch reports and then refuses a status the
- * registry does not describe, before storing it: the caller's own error path
- * then answers the request as it answers any other failure, and the status the
- * request already carried is not replaced.  Every call is examined, and nothing
- * is remembered about a request for the sake of it, so a status refused once
- * and set again is refused and reported again.  The report is written at alert
- * level, so that it survives an error_log level that hides anything less.
+ * A build configured with the switch reports a status the registry does not
+ * describe and then stores it exactly as it stores any other.  Validation names
+ * what such a build was asked to look for and it names nothing that is sent:
+ * the response carries the status it was given whichever build sends it, so one
+ * configuration is answered alike by both, and the build that validates stays
+ * usable for the development and conformance work it exists for rather than
+ * answering differently for the statuses it objects to.  Every call is
+ * examined, and nothing is remembered about a request for the sake of it, so a
+ * status reported once and set again is reported again.  The report is written
+ * at error level, which is the level the default error_log shows and is not the
+ * alert level nginx keeps for a fault of its own making.
+ *
+ * This is the one place such a status is reported from, and that is deliberate:
+ * a status the registry does not describe produces one report for each time
+ * something tries to store it, and the report names the status.  Callers add
+ * nothing beside it: there is nothing about a call site that the report does
+ * not already say, and a second line naming no status would tell an operator
+ * that two things went wrong.  The two gates in ngx_http_special_response.c,
+ * which examine a status without having a caller to answer to, note theirs at
+ * debug level for the same reason: every status they see reaches this function
+ * afterwards, when ngx_http_send_header() moves the error status of the request
+ * into the response, and is reported here in its turn.  That a status is
+ * objected to never keeps it from being sent, so a response that has already
+ * gone wrong is still answered, and a status a configuration named is answered
+ * with.
  *
  * The examination is scoped to the origin of the response, by r->upstream, and
  * never to the value of the status or to the call site: a request answered from
@@ -323,12 +341,9 @@ ngx_http_status_lookup(ngx_uint_t status)
  * status nginx chooses being described by the registry.  The exemption decides
  * reporting alone, so no response depends on it.
  *
- * The two gates in ngx_http_special_response.c report the same way but refuse
- * nothing, neither having a caller with a result to act on.  A status one of
- * them reported reaches this function once more, when ngx_http_send_header()
- * moves the error status of the request into the response, and is refused there
- * like any other: a build configured to object to a status does not send it,
- * and the request is finalized as for any other failure of that function.
+ * The result is NGX_OK for every status this function stores, and the callers
+ * of it keep the error path each has, so that a policy which does refuse a
+ * status has one place to be written and no call site to be changed.
  *
  * This is a function and not a macro in either build, so that a module compiled
  * against one build of nginx behaves in another exactly as a module compiled
@@ -341,10 +356,8 @@ ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status)
 #if (NGX_HTTP_STATUS_VALIDATION)
 
     if (r->upstream == NULL && !ngx_http_status_present(status)) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "unregistered HTTP status %ui", status);
-
-        return NGX_ERROR;
     }
 
     /*

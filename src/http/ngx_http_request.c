@@ -2845,10 +2845,12 @@ ngx_http_terminate_request(ngx_http_request_t *r, ngx_int_t rc)
      * or has sent nothing, so a status that a response did carry is not
      * overwritten for the log.
      *
-     * There is nothing here to answer a refusal with: this function returns
-     * nothing, and the request is being terminated, so a refusal is reported
-     * and the log is left the status the request already carried.  A build
-     * without --with-http_status_validation refuses nothing.
+     * The result is answered for as it is wherever the setter is called, and
+     * there is nothing here to answer a refusal with beyond reporting it: this
+     * function returns nothing, and the request is being terminated.  No build
+     * refuses a status, so the log is left the status this writes; and the two
+     * codes that reach here are nginx's own, which the registry describes, so a
+     * build configured to validate has nothing to report of them either.
      */
 
     if (rc > 0 && (mr->headers_out.status == 0 || mr->connection->sent == 0)) {
@@ -3941,10 +3943,12 @@ ngx_http_free_request(ngx_http_request_t *r, ngx_int_t rc)
      * nothing, so a status that a response did carry is not overwritten for the
      * log.
      *
-     * There is nothing here to answer a refusal with: this function returns
-     * nothing, and the request is freed after this, so a refusal is reported
-     * and the log is left the status the request already carried.  A build
-     * without --with-http_status_validation refuses nothing.
+     * The result is answered for as it is wherever the setter is called, and
+     * there is nothing here to answer a refusal with beyond reporting it: this
+     * function returns nothing, and the request is freed after this.  No build
+     * refuses a status, so the log is left the status this writes; and the two
+     * codes that reach here are nginx's own, which the registry describes, so a
+     * build configured to validate has nothing to report of them either.
      */
 
     if (rc > 0 && (r->headers_out.status == 0 || r->connection->sent == 0)) {

@@ -1778,8 +1778,21 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
         return rc;
     }
 
+    /*
+     * Unlike the module call sites that write a status of their own, the status
+     * here is an argument: a return directive supplies whatever number the
+     * configuration named, so unlike those sites this one is genuinely reached
+     * with a status the registry does not describe.  A refusal, which the
+     * setter does not produce as it is written today, is therefore noted at
+     * debug level rather than reported again -- ngx_http_status_set() has
+     * already written the one report such a status produces, and it names the
+     * status, which a line here would not.
+     */
+
     if (ngx_http_status_set(r, status) != NGX_OK) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0, "invalid status");
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "http status %ui refused for a response of nginx's own",
+                       status);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -1857,13 +1870,20 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
  *
  * The status being moved was examined where it was chosen, by the gate in
  * ngx_http_special_response_handler() or by ngx_http_send_error_page(), and
- * neither of those refuses one: each reports a status the registry does not
- * describe and lets it stand, having no caller of its own to answer a refusal
- * to.  A build configured with --with-http_status_validation refuses it here
- * instead, where there is a caller to answer: the response is not sent, and the
- * request is finalized as it is for any other failure of this function.  A
- * build without the switch stores the status and answers NGX_OK, as it does for
- * every status.
+ * neither of those replaces one: each notes a status the registry does not
+ * describe, at debug level, and lets it stand, having no caller of its own to
+ * answer to.  A build configured with --with-http_status_validation reports it
+ * here as well, the setter examining every status it is given, and then stores
+ * it as any other; a build without the switch stores it in silence.  Either way
+ * the response is sent, so a request that has already gone wrong is answered
+ * with the status it went wrong with whichever build answers it.
+ *
+ * Nothing is logged beside what the setter writes.  ngx_http_status_set() has
+ * already written the one report an objectionable status produces, naming the
+ * status, and this is the point every such status reaches, so a line here would
+ * repeat that report for every one of them while saying less than it does: it
+ * would not name the status, and there is nothing about this site that the
+ * report written from inside the setter does not already tell an operator.
  *
  * The status line is cleared after the store and not by it, the setter not
  * touching the status line, so that the moved status is not sent under the
@@ -1885,8 +1905,6 @@ ngx_http_send_header(ngx_http_request_t *r)
 
     if (r->err_status) {
         if (ngx_http_status_set(r, r->err_status) != NGX_OK) {
-            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                          "invalid status");
             return NGX_ERROR;
         }
 

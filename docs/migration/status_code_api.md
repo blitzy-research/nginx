@@ -24,12 +24,14 @@ change: no directive was added, renamed, or removed. The status constants in
 status; no existing function signature changed; no linker-visible symbol was
 removed. The registry is additive, and this is not a breaking change.
 
-A default build sends what it always sent, with the two exceptions named in the
-two paragraphs below. Every status line, every error page body, every `$status`
+nginx sends what it always sent, with the two exceptions named in the two
+paragraphs below. Every status line, every error page body, every `$status`
 value, and every HTTP/2 and HTTP/3 `:status` field is byte for byte what it was
 before the registry existed. Strict validation is a separate thing a build may
 be configured to do, with `--with-http_status_validation`, and it is off unless
-it is asked for; see [the strict build](#the-strict-build).
+it is asked for; it adds lines to the error log and changes no response, so the
+sentence above holds for a build with it as well as for a build without one. See
+[the strict build](#the-strict-build).
 
 One bound is new, and it belongs to two encodings rather than to the API: a
 status of four digits or more cannot be carried over HTTP/2 or HTTP/3, because
@@ -40,30 +42,36 @@ filters, before either reserves those bytes, each filter naming the bound itself
 as `NGX_HTTP_V2_STATUS_MAX` or `NGX_HTTP_V3_STATUS_MAX` and neither publishing
 it, because how wide a status is written is not a fact about a status code.
 
-The embedded Perl `status()` method is bounded too, and more narrowly, because
-it is handed whatever integer a script passes and is the one place a status
-arrives from outside nginx at all. What bounds it is the range of the registry
-rather than a width: every status below 100 except zero, and every status of 600
-or more, is refused by asking `ngx_http_status_in_range()`, which refuses every
-status too wide for either encoding along with them.
+The embedded Perl `status()` method is bounded too, because it is handed
+whatever integer a script passes and is the one place a status arrives from
+outside nginx at all. What bounds it is the same width and nothing narrower:
+`nginx.xs` names it `NGX_HTTP_PERL_STATUS_MAX`, keeps it private as the two
+filters keep theirs, and `croak()`s for a negative value or one above 999. A
+negative one is refused before the conversion that would make it a very large
+unsigned one. Zero is inside that width and is admitted: it is the value a
+request already carries before a status has been chosen, and it is what `SvIV()`
+answers for an undefined argument and for one that is not a number at all, so a
+script that passes it is asking for the status the request already had. Written
+as three digits it is `000`, which fits the field either encoding reserves.
 
-Zero is the one value below 100 that method admits. It is the value a request
-already carries before a status has been chosen, and it is what `SvIV()` answers
-for an undefined argument and for one that is not a number at all, so a script
-that passes it is asking for the status the request already had: the value is
-forwarded unchanged, `send_http_header()` answers 200 for it, and that is what a
-default build did before this bound existed. Zero written as three digits is
-`000`, so admitting it takes nothing away from what the bound is for. A strict
-build refuses zero along with every other status the registry does not describe,
-and refuses it at `ngx_http_status_set()` rather than at the range test.
+That bound is deliberately **not** the range of the registry.
+`ngx_http_status_in_range()` answers which statuses the registry *describes*,
+which is a narrower question than which ones a response may *carry*: `return
+999;` in a configuration names a status the registry does not describe and
+nginx sends `HTTP/1.1 999 `, so `$r->status(999)` from a script is answered the
+same way. The two paths by which nginx authors a status agree over the whole of
+`[0, 999]`, and a status below 100 is written as three digits like any other.
+Zero is accepted as well: it is the value a request starts with, so
+`send_http_header()` answers 200 for it.
 
-It is deliberately not held where a status is chosen, so nothing about adopting
-this API narrows what a call site may ask for. An HTTP/1.x status line reserves
-`NGX_INT_T_LEN` bytes for the same number and carries any width, and a
-configuration has always been able to ask for one: `error_page 404 =1234
-/wide;` is accepted and, in a build without the validation switch, answers
-`HTTP/1.1 1234 `. Nothing nginx chooses for itself comes near that width in any
-case. [The range](#range) names that macro and [HTTP/2 and
+The width bound is deliberately not held where a status is chosen, so nothing
+about adopting this API narrows what a call site may ask for. An HTTP/1.x status
+line reserves `NGX_INT_T_LEN` bytes for the same number and carries any width,
+and a configuration has always been able to ask for one: `error_page 404 =1234
+/wide;` is accepted and answers `HTTP/1.1 1234 ` in either build, a build with
+the validation switch reporting such a status and sending it unaltered. Nothing
+nginx chooses for itself comes near that width in any case. [The
+range](#range) names the registry's macro and [HTTP/2 and
 HTTP/3](#http2-and-http3) says what each of the two encoders holds and does,
 while [converting direct assignments](#6-converting-direct-assignments) says
 what a caller does with a result.
@@ -94,7 +102,8 @@ No per-file include edit is normally required.
 ### `ngx_http_status_set()`
 
 The entry point for a status nginx or a module chose itself. It answers `NGX_OK`
-or `NGX_ERROR`, and a caller is expected to act on the result.
+for every status it is given, in either build; the result is declared and
+handled all the same, and the recipe below explains why.
 
 Direct stores of `r->headers_out.status` are kept in the core beside it at
 **two call sites, which fall into two categories**, and a module converting call
@@ -126,41 +135,44 @@ and not `r->err_status`, which is a different status for a different purpose.
 Anything else a call site used to do next it still has to do; see
 [converting direct assignments](#6-converting-direct-assignments).
 
-It answers `NGX_ERROR` in one case, and it neither clamps, substitutes, nor
-silently rewrites a status:
+It refuses nothing, and it neither clamps, substitutes, nor silently rewrites a
+status. One case makes it write to the log, and that is all it makes it do:
 
 - **A status the registry does not describe**, in a build configured with
   `--with-http_status_validation` only, and only for a status nginx originated —
   that is, one set on a request with no upstream attached. It is reported at
-  `NGX_LOG_ALERT` as `unregistered HTTP status NNN` and `NGX_ERROR` is returned
-  *before* the status is stored, so the request keeps whatever status it already
-  carried and the caller's own error handling answers it. Every call is
-  examined, so this happens however many statuses that request has been given
-  already. A default build stores such a status and answers `NGX_OK`, which is
-  why what a default build sends is unchanged.
+  `NGX_LOG_ERR` as `unregistered HTTP status NNN`, and the status is then
+  stored exactly as any other is. Every call is examined, so a status reported
+  once and set again is reported again. A default build stores the same status
+  and reports nothing, which is why what either build sends is the same.
+
+**A strict build differs from a default build in the error log and nowhere
+else.** The response is identical, `$status` is identical, and no request is
+answered differently on account of the switch. The switch exists to tell a
+developer that nginx chose a status the registry does not describe; refusing
+such a status would mean answering the request differently, which is precisely
+what the switch must not do.
 
 How wide a status is has nothing to do with this. A status of four digits is a
-status the registry does not describe like any other: a default build stores it
-and answers `NGX_OK`, and a strict build reports and refuses it in the same
-breath as a narrower one it does not describe. The bound on width is the two
-header filters' own, as [scope and compatibility](#1-scope-and-compatibility)
-explains.
+status the registry does not describe like any other: either build stores it and
+answers `NGX_OK`, and a strict build reports it in the same breath as a narrower
+one it does not describe. The bound on width is the two header filters' own, as
+[scope and compatibility](#1-scope-and-compatibility) explains, and it is real —
+it refuses a response — while this is a report.
 
-Reporting is once for a call, as refusal is. Nothing recorded on the request
-makes a later objection silent and nothing grants a status: a status refused
-once and then set again, from the same caller or from another, is examined and
-refused again, and reported again. No sequence of calls arrives at a status a
-strict build was configured to object to.
+Reporting is once for a call and never once for a request. Nothing recorded on
+the request makes a later objection silent: a status reported once and then set
+again, from the same caller or from another, is examined and reported again.
 
 `ngx_http_send_header()` moves the error status of a request over its response
 status through this function like every other write of a response status, so in
 a strict build that move is examined too and a status one of [the two
-gates](#statuses-a-handler-returns) reported and let stand is refused there.
-`ngx_http_send_header()` answers `NGX_ERROR` to whoever asked it for the header
-and the response is not sent; see [a status that is merely being
+gates](#statuses-a-handler-returns) reported is reported once more where it is
+moved. `ngx_http_send_header()` answers `NGX_OK` and the response is sent; see
+[a status that is merely being
 moved](#a-status-that-is-merely-being-moved).
 
-It never refuses a status merely because `r->status_final` is already set. A
+It does nothing at all on account of `r->status_final` already being set. A
 status may legitimately be set again after a response has been decided, and a
 strict build notes that at debug level and stores it.
 
@@ -479,12 +491,66 @@ always sent.
 
 A build configured with `--with-http_status_validation` additionally looks for a
 status that nginx or a configuration chose and that the registry does not
-describe, reports it at `NGX_LOG_ALERT` as `unregistered HTTP status NNN`, and —
-in the setter alone — refuses it. The setter refuses every such status it is
-given, whatever the request has been given before it, and each of the three
-places that looks reports every status it objects to. Reporting is per call and
-not per request, so a request whose status is objected to twice is two lines in
-the log.
+describe, and reports it at `NGX_LOG_ERR` as `unregistered HTTP status NNN`. It
+then stores and sends that status exactly as a default build does. **Reporting
+is the whole of what the switch adds:** none of the three places that looks
+refuses a status, none substitutes a different one, and no response differs
+between the two builds. A strict build is a default build that writes to the
+error log, and the error log is the only place to look for the difference.
+
+It is written as a report rather than as a refusal because each of the three
+places sees a response that has already been decided. A refusal at the setter
+turns the response into `500`, and a refusal at either gate leaves the request
+with no response at all — and a switch whose purpose is to *report* an
+undescribed status cannot be one that changes how a request is answered. A
+configuration is entitled to `return 306;`, and a strict build must answer it
+with 306.
+
+### One report, from one place
+
+`ngx_http_status_set()` is the only place an objectionable status is reported
+from at a level the default `error_log` shows. It writes exactly one line, at
+`NGX_LOG_ERR`, naming the status:
+
+```
+2026/01/01 00:00:00 [error] 1#1: *1 unregistered HTTP status 418, client: ...
+```
+
+Reporting is per call and not per request. One line is written for each time
+something tries to store such a status, so a request whose status is stored
+twice is two lines — but a single objectionable status stored once is one line
+and never more, on every path: a handler's `return`, an `error_page ... =NNN`
+overwrite, a module call site, and `$r->status()` from a script all produce the
+same single line. Nothing recorded on the request silences a later one: each
+place answers for the call it sees.
+
+Two things follow from that, and a module that adopts this API should keep to
+both:
+
+- **The two gates in `ngx_http_special_response.c` note at debug level, not at
+  error level.** They examine a status without having a caller to answer to, and
+  every status they see reaches the setter afterwards, when
+  `ngx_http_send_header()` moves it into the response. An error-level line at a
+  gate would therefore say the same thing about the same status for the same
+  request that the setter is about to say, and a report repeated is an operator
+  counting two problems where there is one. The debug notes remain because the
+  gate a status passed through is worth seeing when following a request through
+  a debug log.
+- **A caller does not report the setter's finding a second time.**
+  `ngx_http_send_header()` returns the result and logs nothing; the `status()`
+  method of the embedded Perl module `croak()`s and logs nothing;
+  `ngx_http_send_response()`, whose status is an argument a `return` directive
+  supplied rather than a literal of its own, notes at debug level. There is
+  nothing about a call site that the setter's report does not already say, and a
+  second line naming no status says less than the first.
+
+A module call site that follows [the three-line
+recipe](#6-converting-direct-assignments) keeps the `ngx_log_error()` that
+recipe specifies: it names the site, which the setter's report does not, and no
+in-tree call site can reach it in any case — the setter answers `NGX_OK` for
+every status it stores, and every literal those sites set is described by the
+registry. What matters is that a site with a result to act on acts on it;
+logging beside it is the recipe's, not an obligation the API imposes.
 
 ### Validation is scoped to the origin of the response
 
@@ -516,16 +582,57 @@ such return converges through `ngx_http_finalize_request()` into
 there, once, at that convergence. Do not convert `return NGX_HTTP_*;` statements
 one site at a time; there is nothing to convert.
 
-That gate reports and does not refuse, and it stores the status it was given:
-`r->err_status` is set to the `error` it was called with, unchanged. The same
-holds at the gate in `ngx_http_send_error_page()`, which sees the status an
-`error_page ... =NNN` overwrite named. Both are what answers a request that has
-already gone wrong, so refusing there would leave it with no response at all
-rather than with a worse one. Only `ngx_http_status_set()` refuses, because only
-it has a caller with a result to act on, and it refuses every status the
-registry does not describe — including one a gate has already reported for the
-same request, which it reports again. A gate leaves nothing behind that silences
-a later line. No status is rewritten to a different one at any of the three.
+That gate reports and stores the status it was given: `r->err_status` is set to
+the `error` it was called with, unchanged. The same holds at the gate in
+`ngx_http_send_error_page()`, which sees the status an `error_page ... =NNN`
+overwrite named, and at `ngx_http_status_set()`, which sees that status once
+more when `ngx_http_send_header()` moves it into the response and reports it
+there. None of the three refuses, none rewrites a status to a different one, and
+a gate leaves nothing behind that silences a later line. A `return 599;` in a
+strict build is therefore a `HTTP/1.1 599 ` response — the same response a
+default build sends — and a line in the error log naming 599.
+
+The two gates write their note at `NGX_LOG_DEBUG_HTTP` and not at `NGX_LOG_ERR`,
+and only the setter writes at a level the default `error_log` shows; see [one
+report, from one place](#one-report-from-one-place). The reason is that every
+status a gate sees reaches the setter afterwards, when `ngx_http_send_header()`
+moves the error status into the response, so an error-level line at a gate would
+be the setter's line said twice.
+
+### What a strict build looks like from outside
+
+**It looks exactly like a default build.** That is worth stating plainly,
+because it is the first thing an operator asks and the one property the switch
+must not break. Anyone turning it on in a development or conformance environment
+should expect the following, and should read any departure from it as a defect:
+
+| | Default build | Strict build |
+| - | - | - |
+| Reached by | `return 306;`, `return 306 "text";`, `return 480;`, `return 599;`, `error_page 404 =599 /uri` | the same |
+| Client sees | the status the configuration named | the same status, byte for byte |
+| Access log records | that status | that same status |
+| Error log | nothing | one line per store, naming the status |
+
+`$status` reads the effective status of the request, which is `r->err_status`
+when it is set, so a status a handler returned is logged from where the gate
+stored it — see [effective status](#effective-status). A `return 480;` is
+answered with `HTTP/1.1 480 ` and no body in either build, because 480 has no
+error page row of its own, and that too is unchanged by the switch.
+
+On HTTP/2 and HTTP/3 the same holds: `:status` carries the number and the switch
+adds nothing to the exchange. What does stop a response on those two encodings
+is the width bound, which belongs to the encoders rather than to validation and
+is in force in every build:
+
+| | HTTP/2 | HTTP/3 |
+| - | - | - |
+| A status of four digits or more | the stream is reset | the stream is reset |
+| Connection | survives; no `GOAWAY` | survives; no `GOAWAY` |
+| Later streams | unaffected, and answered normally | unaffected, and answered normally |
+
+That costs the stream and not the connection, and neither encoder is left
+inconsistent by it: the header block is never begun, the bound being tested
+before either reserves the three bytes `:status` needs.
 
 ### `status_final` is a record, not a lock
 
@@ -567,8 +674,15 @@ After:
 Keep the recipe as it stands. `NGX_LOG_ALERT` is the level, `"invalid status"`
 is the message, and the request is answered `NGX_HTTP_INTERNAL_SERVER_ERROR`.
 Do not lower the log level, reword the message, discard the result, or carry on
-executing after a failure: a status the setter refused is one the response
-cannot or should not carry, and the enclosing function has to stop.
+executing after a failure.
+
+**The branch is never taken as the setter is written today**, because no build
+refuses a status. Write it anyway. It is the one place a policy that does refuse
+one would take effect, so a call site that handles the result needs no edit if
+the policy ever changes, and a module compiled against one build behaves the
+same in the other. The cost is a branch on a value the compiler already knows,
+which it removes. Treat the result as you would the result of any function that
+is declared to be able to fail: handled, not assumed.
 
 A compile-time constant and a value computed at run time are converted exactly
 the same way: both go through `ngx_http_status_set()`, and neither has a form of
@@ -597,7 +711,23 @@ the idiom `ngx_http_dav_put_handler()` already uses:
 
 XS code reports an error by `croak()` and not by returning an nginx status, so
 use the idiom already established in `src/http/modules/perl/nginx.xs` rather
-than introducing a return value the surrounding code does not expect.
+than introducing a return value the surrounding code does not expect:
+
+```c
+    if (ngx_http_status_set(r, (ngx_uint_t) code) != NGX_OK) {
+        croak("status(): invalid status code");
+    }
+```
+
+`croak()` is the whole of it. Nothing is logged beside it, the setter having
+already written the one report an objectionable status produces; see [one
+report, from one place](#one-report-from-one-place). A `croak()` reaches the
+script, which
+fails, and nginx answers the request 500 as it does for any failing handler —
+and, as for any failing handler, the error log records nginx's own
+`call_sv("sub {...}") failed:` line, which echoes the handler's source. That
+format is nginx's and predates this API; what is new is only that a status
+outside `[0, 999]` can now provoke it.
 
 #### A site that only records an already-decided status
 
@@ -607,10 +737,11 @@ were, and handles the result with whichever idiom the enclosing function allows.
 There is no separate exempt setter to call, and none should be invented.
 
 **Never discard the result.** `(void) ngx_http_status_set(r, rc);` is not an
-idiom this guide offers: a strict build answers `NGX_ERROR` without storing, so
-casting the result away leaves the request carrying whatever status it had
-before — which is precisely the status such a site exists to replace — and the
-log then records that older status, or none.
+idiom this guide offers. The result is declared so that a policy which refuses
+a status has one place to be written; a call site that casts it away is one that
+would silently miss such a policy, and would then log whatever status the
+request had before — or none — rather than the status the site exists to
+record.
 
 The core's own two sites of this kind are the teardown paths, and they are
 converted like any other. `ngx_http_terminate_request()` in
@@ -627,18 +758,17 @@ setter inside it:
 ```
 
 and `ngx_http_free_request()` does the same under the same guard for the request
-it is freeing. Both report a refusal and carry on, which is the whole of what is
-left to them: neither returns a result to a caller, the request is being torn
-down or freed, and there is no response left to answer a refusal in. Where a
-refusal is reported the log keeps whatever status the request already carried.
-Neither path provokes one in practice — `NGX_HTTP_CLOSE` and
+it is freeing. Both log and carry on, which is the whole of what is left to
+them: neither returns a result to a caller, the request is being torn down or
+freed, and there is no response left in which to answer a failure. Neither would
+report an undescribed status in practice either — `NGX_HTTP_CLOSE` and
 `NGX_HTTP_CLIENT_CLOSED_REQUEST` are among the codes that reach them and the
-registry describes both — and a default build refuses nothing at all.
+registry describes both.
 
-Reporting a refusal and carrying on is right only where there is nothing else
-the function can do. A module call site almost never is such a place: a handler
-can return, a filter can return, and a `void` handler can finalize. Where any of
-those is possible, act on the result rather than report it and continue.
+Logging and carrying on is right only where there is nothing else the function
+can do. A module call site almost never is such a place: a handler can return, a
+filter can return, and a `void` handler can finalize. Where any of those is
+possible, act on the result rather than report it and continue.
 
 #### A status that is merely being moved
 
@@ -652,8 +782,6 @@ function](#adapting-to-the-shape-of-the-enclosing-function) allows:
 ```c
     if (r->err_status) {
         if (ngx_http_status_set(r, r->err_status) != NGX_OK) {
-            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                          "invalid status");
             return NGX_ERROR;
         }
 
@@ -661,25 +789,28 @@ function](#adapting-to-the-shape-of-the-enclosing-function) allows:
     }
 ```
 
-Two things about that shape are deliberate. The status line is cleared only
-where the setter accepted the move, so a refused move leaves the request as it
-was rather than half changed. And the refusal is returned rather than reported
-and passed over: `ngx_http_send_header()` answers `NGX_ERROR`, which its callers
-already handle as they handle any other failure of that function, and the
-response is not sent.
+Three things about that shape are deliberate. The status line is cleared only
+where the setter accepted the move, so a move that a policy did refuse would
+leave the request as it was rather than half changed. The result is returned
+rather than reported and passed over: `ngx_http_send_header()` would answer
+`NGX_ERROR`, which its callers already handle as they handle any other failure
+of that function. And nothing is logged beside it, because this is the point
+that *every* objectionable status reaches — a line here would repeat the
+setter's report for every one of them while naming no status; see [one report,
+from one place](#one-report-from-one-place). As the setter is written today it
+always accepts, so the line is always cleared and the header is always sent.
 
-**Nothing a request has accumulated stands aside for it.** The setter refuses
-*every* unregistered status it is given, whatever the request was given before
-it, and no path is to be added that would relax that. A path which stood aside
-for a request whose status had already been reported would, from the second call
-onward, send exactly what a strict build was configured to object to.
+**Nothing a request has accumulated stands aside for it.** The setter examines
+*every* status it is given, whatever the request was given before it, and no
+path is to be added that would relax that. Examination is per call in both
+builds, so a strict build reports a status once for each place it passes.
 
 So what a strict build does with a status one of [the two
-gates](#statuses-a-handler-returns) reported and let stand is refuse it here and
-send nothing, rather than send a response the switch was asked to object to. A
-default build sends it, and what a default build sends is what nginx has always
-sent. None of this is a module's concern: a module with a status to choose calls
-`ngx_http_status_set()` and uses the three-line wrapper above.
+gates](#statuses-a-handler-returns) reported is report it once more here and
+send it. The response is what a default build sends, and what a default build
+sends is what nginx has always sent. None of this is a module's concern: a
+module with a status to choose calls `ngx_http_status_set()` and uses the
+three-line wrapper above.
 
 ### Keep the side effects that were already there
 
@@ -852,9 +983,11 @@ the digits are why each of the two filters names a width bound of its own —
 `NGX_HTTP_V2_STATUS_MAX` and `NGX_HTTP_V3_STATUS_MAX`, each of them 999 and each
 private to the file that reserves those bytes. A status of four digits or more
 is refused there, with an alert, before either filter reserves them. The
-registry publishes no such bound and nothing else in the tree tests one; the
-embedded Perl `status()` method, which is the one place such a value can arrive
-from outside nginx, refuses it by asking `ngx_http_status_in_range()` instead.
+registry publishes no such bound. The embedded Perl `status()` method, which is
+the one place such a value can arrive from outside nginx, holds one of its own
+at the same width — `NGX_HTTP_PERL_STATUS_MAX`, also 999 and also private — so
+that a value too wide is refused by the producer rather than caught inside an
+encoder. All three are widths, and none of them is the range of the registry.
 See [HTTP/2 and HTTP/3](../api/status_codes.md#http2-and-http3).
 
 ## 9. Metadata and build behavior
@@ -873,8 +1006,8 @@ kept separate on purpose.
 | Read by | `ngx_http_status_is_cacheable()` | `ngx_http_status_expires_ok()` |
 
 Neither set contains the other. `EXPIRES_OK` has 201, 302, 303, 304, and 307,
-which are not heuristically cacheable; `CACHEABLE` has 203, 404, 405, 410, 414,
-and 501, which `expires` processing does not apply to. **Never call
+which are not heuristically cacheable; `CACHEABLE` has 203, 300, 404, 405,
+410, 414, and 501, which `expires` processing does not apply to. **Never call
 `ngx_http_status_is_cacheable()` where `ngx_http_status_expires_ok()` is
 meant**, or the other way round: substituting one would change which responses
 receive an `Expires` header. See
@@ -903,6 +1036,37 @@ formatting, which is why the literal 9 appears in a log as `009` and the final
 fallback as `000`. A module that needs the same value should call this rather
 than reimplement the cascade.
 
+### What the setter costs
+
+nginx is built without link-time optimization — no generated makefile in the
+tree passes `-flto` — so `ngx_http_status_set()` is a real call and is never
+inlined into the module that calls it. Any instruction count quoted for it is
+therefore a count of its **function body**, not of what a call site pays, and
+the two are worth keeping apart when reading such a figure.
+
+Measured on x86-64 with gcc 13 at the tree's own optimization settings:
+
+| | Default build | Strict build |
+| - | - | - |
+| Body of `ngx_http_status_set()` | 5 instructions, 24 bytes | 47 instructions, 196 bytes |
+| Validation instructions in that body | **none — the code is not compiled** | the range test, the index probe, the exemption test, and the report |
+| A converted literal call site | two instructions to place the arguments, then `call` | the same |
+| The same assignment before conversion | one store | one store |
+
+So a converted call site in a default build costs the argument setup and the
+call in place of a store, and the body it enters does the store, sets the
+`status_final` bit, loads `NGX_OK`, and returns. There is no test of the status
+in it at all: the reporting code sits inside a bare
+`#if (NGX_HTTP_STATUS_VALIDATION)`, and a default build's object file does not
+contain it — the string `unregistered HTTP status` is absent from
+`ngx_http_status.o` and from the linked binary. The validation a default build
+performs on a status costs nothing because a default build performs none.
+
+The registry the strict body probes is one array of definitions and one index
+over them, together a few kilobytes, written once while the configuration is
+parsed and read-only afterwards; see
+[footprint](../api/status_codes.md#footprint).
+
 ### The strict build
 
 `--with-http_status_validation` is a **configure option**, not an nginx
@@ -921,8 +1085,43 @@ configuration directive. There is no directive for it, and nothing in
 ```
 
 With the option absent, `NGX_HTTP_STATUS_VALIDATION` is not defined, the
-reporting code is not compiled, and behavior is what it always was. The strict
-build is for development and conformance work, not for production traffic.
+reporting code is not compiled, and behavior is what it always was. With the
+option present the reporting code is compiled and behavior is still what it
+always was: the option adds lines to the error log and changes nothing else.
+The strict build is for development and conformance work; enabling it on
+production traffic is safe as far as responses go, but a configuration that
+uses an undescribed status — `return 306;`, say — writes one line per request
+for it, which is a volume of logging rather than a defect.
+
+#### Telling the two builds apart at run time
+
+There is no way to tell them apart from a response, and that is by design. Both
+send the same status line, the same body, and the same HTTP/2 or HTTP/3
+`:status`; `$status` in the access log is the same figure in both, because
+`ngx_http_status_effective()` reads the status the request carries and neither
+build changes it. Even the binary reports the same `nginx -V` configure line
+apart from the option itself.
+
+**The error log is the only place the two differ.** An operator or a developer
+looking for what a strict build has found should grep it for
+`unregistered HTTP status`:
+
+```sh
+grep 'unregistered HTTP status' logs/error.log
+```
+
+Each line names the status and the request that carried it, at `[error]` level,
+so it is visible at the default `error_log` level and at anything more verbose.
+A status that passes more than one of the three places that look produces one
+line for each — a `return 599;` produces two — so count requests rather than
+lines when judging how often a configuration reaches an undescribed status.
+
+The level is `[error]` deliberately and not `[alert]`. `[alert]` is for a
+condition that needs attention now, and a status the registry does not describe
+is not one: the response was sent, the request was answered, and nothing is
+degraded. Test harnesses commonly treat any `[alert]` as a failure for that
+reason, so reporting at that level would have made a strict build fail tests
+that a default build passes while both sent identical bytes.
 
 ### What the registry guarantees not to have changed
 
@@ -941,7 +1140,9 @@ build is for development and conformance work, not for production traffic.
   HTTP/3 width bounds, both of which are unconditional and are described in
   [scope and compatibility](#1-scope-and-compatibility) and in section 8,
   [reason phrases and wire
-  compatibility](#8-reason-phrases-and-wire-compatibility).
+  compatibility](#8-reason-phrases-and-wire-compatibility); and a strict build
+  answers every request the same way a default build answers it, differing only
+  in what it writes to the error log.
 - One bit, `status_final:1`, is added to `ngx_http_request_t`, unconditionally
   rather than under the build option, and at the end of an existing bit field
   run where the compiler already had padding. The layout of the request
@@ -950,12 +1151,20 @@ build is for development and conformance work, not for production traffic.
   of the same configuration, no member offset moves, and the module signature is
   identical between the two.
 - HTTP/1.x status lines, error page bodies, `$status`, and HTTP/2 and HTTP/3
-  `:status` output are byte compatible in a default build for every status that
-  reaches an encoder. The two unconditional bounds above decide which statuses
-  do: a script may no longer set a status below 100, zero excepted, or one of
-  600 or more, and a status of four digits or more is no longer written into the
-  three bytes an HTTP/2 or HTTP/3 `:status` reserves. Neither bound changes the
-  bytes of any status that was already inside them.
+  `:status` output are byte compatible in either build, with two deliberate
+  exceptions, both unconditional and both described under [scope and
+  compatibility](#1-scope-and-compatibility). The `status()` method of the
+  embedded Perl module now bounds what a script hands it, so a negative status
+  or one above 999 is refused with `croak("status(): invalid status code")`
+  where it previously reached the emitters; and a status of four digits or more
+  is no longer written into the three bytes an HTTP/2 or an HTTP/3 `:status`
+  reserves. Those two are the whole of it, and they are the same bound seen
+  twice: `%03ui` reserves three bytes for a status while writing as many digits
+  as the number needs, so a wider one overruns the field block, and a script's
+  integer is the one status nginx neither parses nor chooses and so the one that
+  can be that wide. Every status inside those bounds is sent exactly as it was
+  before. An audit of byte compatibility should read these exceptions together
+  with that guarantee rather than either alone.
 - What this work adds is registry metadata and the ability to validate against
   it. It adds no built-in status code and corrects no reason phrase.
 

@@ -408,13 +408,14 @@ static ngx_uint_t  ngx_http_status_test_range_want[] = {
 
 
 /*
- * Status codes as a signed value, which is how the one caller that guards on
- * the range receives one: the embedded Perl setter holds an IV, so a script may
- * hand it a negative number, and the number is only widened to unsigned after
- * the range has been asked about it.  An unsigned probe cannot express any of
+ * Status codes as a signed value, which is how a status arrives at a caller
+ * that reads one from outside nginx: the embedded Perl setter holds an IV, so a
+ * script may hand it a negative number, and such a number is only widened to
+ * unsigned once it has been bounded.  An unsigned probe cannot express any of
  * these, so the lower half of the macro's bound is reached by no other probe.
- * Every one of them is out of range, and every one of them is refused once
- * widened, the widening having turned it into a very large unsigned value.
+ * Every one of them is out of range, and every one of them is refused by the
+ * registry once widened, the widening having turned it into a very large
+ * unsigned value.
  */
 
 static ngx_int_t  ngx_http_status_test_signed_probe[] = {
@@ -436,14 +437,17 @@ static ngx_uint_t  ngx_http_status_test_spare[] = {
 
 static ngx_uint_t  ngx_http_status_test_checks;
 static ngx_uint_t  ngx_http_status_test_errors;
-static ngx_uint_t  ngx_http_status_test_alerts;
+static ngx_uint_t  ngx_http_status_test_reports;
 
 /*
  * What the last line written to the log said: the severity it was written at,
  * and the bytes of it.  Counting lines alone would pass a report raised at the
  * wrong severity or carrying the wrong status, so both are kept.  The severity
  * is seeded to NGX_LOG_DEBUG for every request, which no report is written at,
- * so a report that was never raised cannot pass for one that was.
+ * so a report that was never raised cannot pass for one that was.  A report is
+ * written at error level and not at alert level, the external test harness
+ * asserting for every configuration it runs that nothing was written at alert
+ * level, so a report of a status must not read as a fault of nginx's own.
  */
 
 static ngx_uint_t  ngx_http_status_test_level = NGX_LOG_DEBUG;
@@ -459,7 +463,7 @@ static u_char      ngx_http_status_test_line[NGX_MAX_ERROR_STR];
  *
  * The log carries a writer, which is the hook nginx's own logging offers and
  * which nginx calls in place of writing to the log's own file, so that the
- * alerts a check produced are counted rather than inferred.
+ * reports a check produced are counted rather than inferred.
  */
 
 static ngx_http_request_t   ngx_http_status_test_r;
@@ -573,13 +577,13 @@ ngx_http_status_test_req(void)
     ngx_http_status_test_log_file.fd = ngx_stderr;
 
     ngx_http_status_test_log.file = &ngx_http_status_test_log_file;
-    ngx_http_status_test_log.log_level = NGX_LOG_ALERT;
+    ngx_http_status_test_log.log_level = NGX_LOG_ERR;
     ngx_http_status_test_log.writer = ngx_http_status_test_writer;
 
     ngx_http_status_test_c.log = &ngx_http_status_test_log;
     ngx_http_status_test_r.connection = &ngx_http_status_test_c;
 
-    ngx_http_status_test_alerts = 0;
+    ngx_http_status_test_reports = 0;
     ngx_http_status_test_level = NGX_LOG_DEBUG;
     ngx_http_status_test_line_len = 0;
 
@@ -591,8 +595,8 @@ static void
 ngx_http_status_test_writer(ngx_log_t *log, ngx_uint_t level, u_char *buf,
     size_t len)
 {
-    if (level <= NGX_LOG_ALERT) {
-        ngx_http_status_test_alerts++;
+    if (level <= NGX_LOG_ERR) {
+        ngx_http_status_test_reports++;
     }
 
     ngx_http_status_test_level = level;
@@ -1348,7 +1352,7 @@ ngx_http_status_test_internal(void)
 
         ngx_http_status_test_assert_code(rc,
                           ngx_http_status_set(r, code) == NGX_OK
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "is one of nginx's own codes and so must be set "
                           "without complaint", code);
     }
@@ -2029,17 +2033,18 @@ ngx_http_status_test_headroom_reset(void)
  * variable is passed to it here and never an expression with a side effect,
  * which is how every caller of it in the tree passes one.
  *
- * Its bound is what the embedded Perl setter, the one caller that guards on it,
- * refuses a status a script chose outside of: a status below 100 and a status
- * of 600 or more, which as a consequence of the same bound is also every status
- * too wide for the three bytes an HTTP/2 or an HTTP/3 response reserves.  Zero
- * is out of that bound as well, and that setter admits it all the same, for a
- * reason of its own that belongs to it and not to the macro.
+ * Its bound is the range the registry index covers, which is which statuses
+ * the registry may describe and nothing wider: a status below 100 and a status
+ * of 600 or more is outside it.  That is a narrower question than which
+ * statuses a response may carry, so it is deliberately not what bounds a
+ * producer: the embedded Perl setter holds a status to the width three digits
+ * write, NGX_HTTP_PERL_STATUS_MAX, and the two field encoders hold theirs to
+ * the three bytes each reserves.
  *
- * The bound is asked about from both sides.  A signed probe is asked as the
- * setter asks, before any widening, which is the only way the lower side of the
- * bound is reached; the same value is then handed to the registry widened, the
- * way the setter hands it on, and has to be refused there too.
+ * The bound is asked about from both sides.  A signed probe is asked before any
+ * widening, which is the only way the lower side of the bound is reached; the
+ * same value is then handed to the registry widened, the way a caller that
+ * reads a signed status hands it on, and has to be refused there too.
  */
 
 static ngx_int_t
@@ -2194,15 +2199,16 @@ ngx_http_status_test_precedence(void)
  * verbatim or leaves empty, and not the error status, which is a different
  * status for a different purpose.
  *
- * It holds a status to no width, and a status the registry does not describe is
- * refused only by the build configured to look for one.
+ * It holds a status to no width, refuses none, and stores every status it is
+ * given; a status the registry does not describe is reported by the build
+ * configured to look for one and stored by it all the same.
  *
  * A status may be set again after the response has been decided, which is what
  * the two places answering for a request being torn down do: they write the
  * status the access log is to record and nothing of a response being sent
  * afterwards.  Both codes that reach them are nginx's own, so the registry
- * describes both and no build refuses either, and either may be written over a
- * response status that was already set.
+ * describes both and neither build reports either, and either may be written
+ * over a response status that was already set.
  */
 
 static ngx_int_t
@@ -2225,7 +2231,7 @@ ngx_http_status_test_set(void)
                           r->headers_out.status_line.len == 0
                           && r->headers_out.status_line.data == NULL
                           && r->err_status == 0 && r->upstream == NULL
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "setting a status wrote more than the response "
                           "status and the bit recording it");
 
@@ -2235,16 +2241,16 @@ ngx_http_status_test_set(void)
                           && r->headers_out.status
                              == NGX_HTTP_CLIENT_CLOSED_REQUEST
                           && r->status_final == 1
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "setting a status a second time was refused or "
                           "reported, which the access log depends on being "
-                          "allowed");
+                          "allowed in silence");
 
     ngx_http_status_test_assert(rc,
                           ngx_http_status_set(r, NGX_HTTP_CLOSE) == NGX_OK
                           && r->headers_out.status == NGX_HTTP_CLOSE
                           && r->status_final == 1
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "setting the status a request closed without a "
                           "response is logged with was refused or reported");
 
@@ -2255,7 +2261,7 @@ ngx_http_status_test_set(void)
 /*
  * A status of the given width, on a request of its own.  The outcome required
  * of the setter is the outcome of a status the registry does not describe:
- * stored and unreported where the build carries no switch, refused and reported
+ * stored and unreported where the build carries no switch, stored and reported
  * where it does.
  */
 
@@ -2272,10 +2278,10 @@ ngx_http_status_test_set_width(ngx_uint_t status, const char *what)
 #if (NGX_HTTP_STATUS_VALIDATION)
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, status) == NGX_ERROR
-                          && r->headers_out.status == 0
-                          && r->status_final == 0
-                          && ngx_http_status_test_alerts == 1, what);
+                          ngx_http_status_set(r, status) == NGX_OK
+                          && r->headers_out.status == status
+                          && r->status_final == 1
+                          && ngx_http_status_test_reports == 1, what);
 
 #else
 
@@ -2283,7 +2289,7 @@ ngx_http_status_test_set_width(ngx_uint_t status, const char *what)
                           ngx_http_status_set(r, status) == NGX_OK
                           && r->headers_out.status == status
                           && r->status_final == 1
-                          && ngx_http_status_test_alerts == 0, what);
+                          && ngx_http_status_test_reports == 0, what);
 
 #endif
 
@@ -2342,10 +2348,11 @@ ngx_http_status_test_set_bounds(void)
 
 /*
  * A status the registry merely does not describe is by contrast perfectly
- * sendable: the build without the switch stores it and sends it, and the build
- * with the switch refuses it, that being what asking for the switch asks for.
- * The difference is asserted against each build rather than left to be found
- * out.
+ * sendable, and both builds send it: the build with the switch reports it, that
+ * being what asking for the switch asks for, and stores it all the same, so
+ * that what a response carries does not depend on the build answering it.  The
+ * one difference between the builds is the report, and it is asserted against
+ * each of them rather than left to be found out.
  */
 
 static ngx_int_t
@@ -2361,13 +2368,13 @@ ngx_http_status_test_set_undescribed(void)
 #if (NGX_HTTP_STATUS_VALIDATION)
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, 999) == NGX_ERROR
-                          && r->headers_out.status == 0
-                          && r->status_final == 0
-                          && ngx_http_status_test_alerts == 1,
+                          ngx_http_status_set(r, 999) == NGX_OK
+                          && r->headers_out.status == 999
+                          && r->status_final == 1
+                          && ngx_http_status_test_reports == 1,
                           "a status the registry does not describe was "
-                          "accepted, stored, or not reported exactly once by "
-                          "the build configured to refuse it");
+                          "refused, left unstored, or not reported exactly "
+                          "once by the build configured to report it");
 
 #else
 
@@ -2375,7 +2382,7 @@ ngx_http_status_test_set_undescribed(void)
                           ngx_http_status_set(r, 999) == NGX_OK
                           && r->headers_out.status == 999
                           && r->status_final == 1
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "a sendable status the registry does not describe "
                           "was refused by the build that must send it");
 
@@ -2419,7 +2426,7 @@ ngx_http_status_test_promote(void)
                           && r->err_status == NGX_HTTP_BAD_GATEWAY
                           && r->headers_out.status_line.len
                              == sizeof("200 OK") - 1
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "moving an error status over a response status did "
                           "not make exactly the two stores the setter makes");
 
@@ -2433,10 +2440,10 @@ ngx_http_status_test_promote(void)
 
 /*
  * And an error status the registry does not describe, which a configuration may
- * name.  The build without the switch moves it; the build with the switch
- * refuses it, leaves the response status as it found it, and reports it, so
- * that the core answers NGX_ERROR to whoever asked for the header rather than
- * sending a status that build was configured to refuse.
+ * name.  Both builds move it, so that ngx_http_send_header() answers for a
+ * request that has already gone wrong rather than leaving it with no response
+ * at all; the build with the switch reports it as it moves it, having been
+ * asked to report a status of that kind wherever one is set.
  */
 
 static ngx_int_t
@@ -2454,14 +2461,14 @@ ngx_http_status_test_promote_undescribed(void)
 #if (NGX_HTTP_STATUS_VALIDATION)
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, r->err_status) == NGX_ERROR
-                          && r->headers_out.status == NGX_HTTP_OK
-                          && r->status_final == 0
+                          ngx_http_status_set(r, r->err_status) == NGX_OK
+                          && r->headers_out.status == 599
+                          && r->status_final == 1
                           && r->err_status == 599
-                          && ngx_http_status_test_alerts == 1,
+                          && ngx_http_status_test_reports == 1,
                           "moving an error status the registry does not "
-                          "describe was not refused, left alone, and reported "
-                          "by the build configured to refuse it");
+                          "describe was not moved and reported exactly once by "
+                          "the build configured to report it");
 
 #else
 
@@ -2470,7 +2477,7 @@ ngx_http_status_test_promote_undescribed(void)
                           && r->headers_out.status == 599
                           && r->status_final == 1
                           && r->err_status == 599
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "moving an error status the registry does not "
                           "describe was refused by the build that must send "
                           "it");
@@ -2506,7 +2513,7 @@ ngx_http_status_test_relayed(void)
                           ngx_http_status_set(r, NGX_HTTP_BAD_GATEWAY) == NGX_OK
                           && r->headers_out.status == NGX_HTTP_BAD_GATEWAY
                           && r->status_final == 1
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "setting a described status on a request that has an "
                           "upstream did not record it, or was not silent");
 
@@ -2524,7 +2531,7 @@ ngx_http_status_test_relayed(void)
     ngx_http_status_test_assert(rc,
                           r->headers_out.status == 599
                           && ngx_http_status_validate(599) == NGX_ERROR
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "relaying a status the registry does not describe "
                           "was not silent, which relaying must be");
 
@@ -2538,9 +2545,15 @@ ngx_http_status_test_relayed(void)
  * Reporting exists only in a build configured with
  * --with-http_status_validation, so these checks are compiled into that build
  * alone.  The log is given a writer, which is the hook nginx's own logging
- * offers, so that the alerts a check produced are counted rather than inferred;
- * the alerts these checks write out are the reporting working and not a failure
- * of it.
+ * offers, so that the reports a check produced are counted rather than
+ * inferred; the lines these checks write out are the reporting working and not
+ * a failure of it.
+ *
+ * Reporting is the whole of what the switch adds.  A status is stored and sent
+ * whether or not the registry describes it, in either build, so no check below
+ * asks a response to differ between the two: what they assert is that a status
+ * the registry does not describe is written to the log, exactly once for every
+ * call that sets one, and that a relayed status is not.
  */
 
 static ngx_int_t
@@ -2555,7 +2568,7 @@ ngx_http_status_test_report(void)
 
     ngx_http_status_test_gate(r, NGX_HTTP_OK);
 
-    ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 0,
+    ngx_http_status_test_assert(rc, ngx_http_status_test_reports == 0,
                                 "a status the registry describes was reported "
                                 "by a gate that examines one");
 
@@ -2563,13 +2576,13 @@ ngx_http_status_test_report(void)
 
     ngx_http_status_test_gate(r, 306);
 
-    ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 1,
+    ngx_http_status_test_assert(rc, ngx_http_status_test_reports == 1,
                                 "a status the registry does not describe was "
                                 "not reported exactly once");
 
     ngx_http_status_test_gate(r, 305);
 
-    ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 2,
+    ngx_http_status_test_assert(rc, ngx_http_status_test_reports == 2,
                                 "a second status the registry does not "
                                 "describe went unreported, this request having "
                                 "been reported for once already");
@@ -2602,13 +2615,14 @@ ngx_http_status_test_reported(ngx_uint_t status, const char *what)
     len = last - want;
 
     ngx_http_status_test_assert_code(rc,
-                          ngx_http_status_test_alerts == 1,
+                          ngx_http_status_test_reports == 1,
                           "was not reported exactly once", status);
 
     ngx_http_status_test_assert_code(rc,
-                          ngx_http_status_test_level == NGX_LOG_ALERT,
-                          "was not reported as an alert, which is the severity "
-                          "a status that cannot be described is reported at",
+                          ngx_http_status_test_level == NGX_LOG_ERR,
+                          "was not reported at error level, which is the "
+                          "severity a status that cannot be described is "
+                          "reported at",
                           status);
 
     ngx_http_status_test_assert_code(rc,
@@ -2646,9 +2660,10 @@ ngx_http_status_test_report_bytes(void)
         r = ngx_http_status_test_req();
 
         ngx_http_status_test_assert_code(rc,
-                          ngx_http_status_set(r, set[i]) == NGX_ERROR,
-                          "was accepted by the setter, so no report of it was "
-                          "written to assert", set[i]);
+                          ngx_http_status_set(r, set[i]) == NGX_OK
+                          && r->headers_out.status == set[i],
+                          "was refused by the setter, or was not stored, so "
+                          "the report of it stands for nothing", set[i]);
 
         if (ngx_http_status_test_reported(set[i],
                           "was not reported with the message the registry "
@@ -2663,7 +2678,7 @@ ngx_http_status_test_report_bytes(void)
 
     ngx_http_status_test_assert(rc,
                           ngx_http_status_set(r, NGX_HTTP_OK) == NGX_OK
-                          && ngx_http_status_test_alerts == 0
+                          && ngx_http_status_test_reports == 0
                           && ngx_http_status_test_level == NGX_LOG_DEBUG
                           && ngx_http_status_test_line_len == 0,
                           "a status the registry describes had a line written "
@@ -2687,7 +2702,7 @@ ngx_http_status_test_gate(ngx_http_request_t *r, ngx_uint_t status)
     if (r->upstream == NULL
         && ngx_http_status_validate(status) != NGX_OK)
     {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "unregistered HTTP status %ui", status);
     }
 }
@@ -2705,7 +2720,7 @@ static void
 ngx_http_status_test_overwrite(ngx_http_request_t *r, ngx_uint_t status)
 {
     if (status && ngx_http_status_validate(status) != NGX_OK) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "unregistered HTTP status %ui", status);
     }
 }
@@ -2735,7 +2750,7 @@ ngx_http_status_test_report_exempts(void)
 
     ngx_http_status_test_gate(r, 599);
 
-    ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 0,
+    ngx_http_status_test_assert(rc, ngx_http_status_test_reports == 0,
                                 "the status an upstream chose was reported, "
                                 "which relaying a response must not be");
 
@@ -2745,7 +2760,7 @@ ngx_http_status_test_report_exempts(void)
 
     ngx_http_status_test_gate(r, 42);
 
-    ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 0,
+    ngx_http_status_test_assert(rc, ngx_http_status_test_reports == 0,
                                 "a status an upstream chose below 100 was "
                                 "reported");
 
@@ -2753,7 +2768,7 @@ ngx_http_status_test_report_exempts(void)
 
     ngx_http_status_test_gate(r, 306);
 
-    ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 1,
+    ngx_http_status_test_assert(rc, ngx_http_status_test_reports == 1,
                                 "a status nginx chose for a request it "
                                 "answered itself was exempted");
 
@@ -2786,14 +2801,14 @@ ngx_http_status_test_report_overwrites(void)
 
     ngx_http_status_test_overwrite(r, 599);
 
-    ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 1,
+    ngx_http_status_test_assert(rc, ngx_http_status_test_reports == 1,
                                 "a status an error_page directive chose was "
                                 "exempted because an upstream had chosen the "
                                 "same number for the same request");
 
     ngx_http_status_test_overwrite(r, 0);
 
-    ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 1,
+    ngx_http_status_test_assert(rc, ngx_http_status_test_reports == 1,
                                 "the form of the directive that keeps the "
                                 "status of what a request is redirected to had "
                                 "a status examined for it");
@@ -2803,15 +2818,14 @@ ngx_http_status_test_report_overwrites(void)
 
 
 /*
- * The setter reports and then refuses, it being the one of the three points
- * where a status is chosen that has a caller with a result to act on: the
- * caller's own error handling runs, and the status the request already carried
- * is left as it was rather than replaced by one this build was configured to
- * object to.
+ * The setter reports and then stores, as the two gates report and let a status
+ * stand: what the switch adds is the report and nothing a response carries, so
+ * a status this build objects to is sent by it exactly as the build without the
+ * switch sends it, and the caller's error path is not entered for it.
  *
- * Every call is examined and every refusal is reported, whatever has happened
- * to the request before it: nothing the request accumulated grants a status or
- * silences a report.
+ * Every call is examined and every examination that finds something is
+ * reported, whatever has happened to the request before it: nothing the request
+ * accumulated grants a status or silences a report.
  */
 
 static ngx_int_t
@@ -2825,31 +2839,30 @@ ngx_http_status_test_set_reports(void)
     r = ngx_http_status_test_req();
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, 306) == NGX_ERROR
-                          && ngx_http_status_test_alerts == 1,
+                          ngx_http_status_set(r, 306) == NGX_OK
+                          && ngx_http_status_test_reports == 1,
                           "setting a status the registry does not describe was "
-                          "accepted, or was not reported exactly once");
+                          "refused, or was not reported exactly once");
 
     ngx_http_status_test_assert(rc,
-                          r->headers_out.status == 0
-                          && r->status_final == 0,
-                          "a status that was refused was stored all the same, "
-                          "so the response would carry one this build objects "
-                          "to");
+                          r->headers_out.status == 306
+                          && r->status_final == 1,
+                          "a status that was reported was not stored, so the "
+                          "response would not carry the status it was given");
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, 305) == NGX_ERROR
-                          && r->headers_out.status == 0
-                          && r->status_final == 0
-                          && ngx_http_status_test_alerts == 2,
-                          "a second such status was accepted, or went "
+                          ngx_http_status_set(r, 305) == NGX_OK
+                          && r->headers_out.status == 305
+                          && r->status_final == 1
+                          && ngx_http_status_test_reports == 2,
+                          "a second such status was refused, or went "
                           "unreported because the first had been reported");
 
     r = ngx_http_status_test_req();
 
     ngx_http_status_test_assert(rc,
                           ngx_http_status_set(r, NGX_HTTP_NOT_FOUND) == NGX_OK
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "setting a status the registry describes was "
                           "reported");
 
@@ -2861,7 +2874,8 @@ ngx_http_status_test_set_reports(void)
  * There is no report of a status being too wide, because the setter holds a
  * status to no width: a wide status is reported as a status the registry does
  * not describe, exactly as a narrow one the registry does not describe is, and
- * each of them is reported where it is refused.
+ * each of them is stored where it is reported.  The width of a status is
+ * answered for by whatever encodes a response, not here.
  */
 
 static ngx_int_t
@@ -2875,17 +2889,18 @@ ngx_http_status_test_set_wide_reports(void)
     r = ngx_http_status_test_req();
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, 1000) == NGX_ERROR
-                          && ngx_http_status_test_alerts == 1,
+                          ngx_http_status_set(r, 1000) == NGX_OK
+                          && r->headers_out.status == 1000
+                          && ngx_http_status_test_reports == 1,
                           "a status of four digits was not reported exactly "
                           "once as a status the registry does not describe");
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, 10000) == NGX_ERROR
-                          && r->headers_out.status == 0
-                          && r->status_final == 0
-                          && ngx_http_status_test_alerts == 2,
-                          "a second status was accepted, or went unreported "
+                          ngx_http_status_set(r, 10000) == NGX_OK
+                          && r->headers_out.status == 10000
+                          && r->status_final == 1
+                          && ngx_http_status_test_reports == 2,
+                          "a second status was refused, or went unreported "
                           "because the first had been reported");
 
     return rc;
@@ -2917,7 +2932,7 @@ ngx_http_status_test_set_relayed(void)
                           ngx_http_status_set(r, 599) == NGX_OK
                           && r->headers_out.status == 599
                           && r->status_final == 1
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "the setter refused or reported a status on a "
                           "request being answered from an upstream");
 
@@ -2928,16 +2943,16 @@ ngx_http_status_test_set_relayed(void)
     ngx_http_status_test_assert(rc,
                           ngx_http_status_set(r, 42) == NGX_OK
                           && r->headers_out.status == 42
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "the setter refused or reported a status below 100 "
                           "on a request being answered from an upstream");
 
     r = ngx_http_status_test_req();
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, 599) == NGX_ERROR
-                          && r->headers_out.status == 0
-                          && ngx_http_status_test_alerts == 1,
+                          ngx_http_status_set(r, 599) == NGX_OK
+                          && r->headers_out.status == 599
+                          && ngx_http_status_test_reports == 1,
                           "the setter exempted a status on a request nginx "
                           "answered itself");
 
@@ -2974,21 +2989,21 @@ ngx_http_status_test_set_mixed(void)
     ngx_http_status_test_assert(rc,
                           ngx_http_status_set(r, 599) == NGX_OK
                           && r->headers_out.status == 599
-                          && ngx_http_status_test_alerts == 0,
+                          && ngx_http_status_test_reports == 0,
                           "the status an upstream chose was reported at the "
                           "gate that exempts it or by the setter that exempts "
                           "it");
 
     ngx_http_status_test_overwrite(r, 599);
 
-    ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 1,
+    ngx_http_status_test_assert(rc, ngx_http_status_test_reports == 1,
                                 "a status a configuration chose was exempted "
                                 "because an upstream had chosen the same "
                                 "number for the same request");
 
     ngx_http_status_test_overwrite(r, 306);
 
-    ngx_http_status_test_assert(rc, ngx_http_status_test_alerts == 2,
+    ngx_http_status_test_assert(rc, ngx_http_status_test_reports == 2,
                                 "a second status a configuration chose went "
                                 "unreported, this request having been reported "
                                 "for once already");
@@ -3001,15 +3016,14 @@ ngx_http_status_test_set_mixed(void)
  * The gate and the move composed on one request, which is the sequence a
  * response that has already gone wrong takes.  The gate of
  * ngx_http_special_response_handler() reports a status the registry does not
- * describe and lets it stand, having no caller of its own to answer a refusal
- * to.  ngx_http_send_header() then hands that same status to the setter, which
- * does have such a caller: this build refuses it, reports it in its turn, and
- * leaves the response status as it found it, so the request is answered as any
- * other failure of send_header is answered.  The build without the switch sends
- * it.
+ * describe and lets it stand.  ngx_http_send_header() then hands that same
+ * status to the setter, which reports it in its turn and moves it into the
+ * response, so the request is answered with the status it went wrong with and
+ * the log carries two lines for it, one from each point that examined it.  The
+ * build without the switch moves it in silence.
  *
- * A second such status on that same request is refused still and reported
- * still: nothing the request accumulated grants a status or silences a line.
+ * A second such status on that same request is reported still: nothing the
+ * request accumulated silences a line.
  */
 
 static ngx_int_t
@@ -3028,26 +3042,27 @@ ngx_http_status_test_gated_promotion(void)
     ngx_http_status_test_assert(rc,
                           r->headers_out.status == NGX_HTTP_OK
                           && r->status_final == 0
-                          && ngx_http_status_test_alerts == 1,
+                          && ngx_http_status_test_reports == 1,
                           "the gate did not report the status once and leave "
                           "the response as it found it");
 
     r->err_status = 599;
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, r->err_status) == NGX_ERROR
-                          && r->headers_out.status == NGX_HTTP_OK
-                          && r->status_final == 0
+                          ngx_http_status_set(r, r->err_status) == NGX_OK
+                          && r->headers_out.status == 599
+                          && r->status_final == 1
                           && r->err_status == 599
-                          && ngx_http_status_test_alerts == 2,
-                          "moving the status the gate let stand was accepted, "
-                          "or was not reported where it was refused");
+                          && ngx_http_status_test_reports == 2,
+                          "moving the status the gate let stand was refused, "
+                          "or was not reported a second time where it was "
+                          "moved");
 
     ngx_http_status_test_assert(rc,
-                          ngx_http_status_set(r, 598) == NGX_ERROR
-                          && r->headers_out.status == NGX_HTTP_OK
-                          && ngx_http_status_test_alerts == 3,
-                          "the setter accepted a status the registry does not "
+                          ngx_http_status_set(r, 598) == NGX_OK
+                          && r->headers_out.status == 598
+                          && ngx_http_status_test_reports == 3,
+                          "the setter refused a status the registry does not "
                           "describe, or left it unreported, because this "
                           "request had been reported for already");
 
@@ -3120,7 +3135,7 @@ static ngx_http_status_test_case_t  ngx_http_status_test_cases[] = {
     { ngx_http_status_test_report_exempts,
       "which statuses a gate exempts from reporting", 1 },
     { ngx_http_status_test_set_reports,
-      "the setter reporting and refusing", 1 },
+      "the setter reporting and storing", 1 },
     { ngx_http_status_test_set_wide_reports,
       "a status of four digits being reported as undescribed", 1 },
     { ngx_http_status_test_set_relayed,
@@ -3157,7 +3172,7 @@ ngx_http_status_test_run(void)
             continue;
         }
 
-        ngx_http_status_test_alerts = 0;
+        ngx_http_status_test_reports = 0;
 
         if (tc->run() == NGX_OK) {
             ngx_log_stderr(0, "  passed  %s", tc->name);

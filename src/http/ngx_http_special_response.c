@@ -515,10 +515,10 @@ ngx_http_error_page_index(ngx_uint_t status)
  * checked here rather than at each of the many places that produce one:
  * ngx_http_finalize_request() routes here the statuses a handler returned and
  * ngx_http_filter_finalize_request() those a filter chose part way through a
- * response, so the two paths converge on this one point.  This gate reports a
- * status and refuses none, having no caller with a result to act on; the status
- * reaches ngx_http_status_set() later, where ngx_http_send_header() moves the
- * error status of the request into the response, and is reported and refused
+ * response, so the two paths converge on this one point.  This gate notes a
+ * status and replaces none, having no caller with a result to act on; the
+ * status reaches ngx_http_status_set() later, where ngx_http_send_header()
+ * moves the error status of the request into the response, and is reported
  * there in its turn.
  *
  * The exemption is scoped to the origin of the response and not to the call
@@ -546,14 +546,25 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
 #if (NGX_HTTP_STATUS_VALIDATION)
 
     /*
-     * Reported and never replaced: the response carries what was asked for.
-     * There is no caller here with a result to act on, this function being
-     * what answers a request that has already gone wrong, so a status is
-     * reported and not refused; ngx_http_status_set() is where a status is
-     * refused, its caller having an error path of its own, and such a status
-     * reaches the setter once more when ngx_http_send_header() moves the error
-     * status of the request into the response.  The report is written at alert
-     * level, so that it survives an error_log level that hides anything less.
+     * Noted and never replaced: the response carries what was asked for.
+     * Validation names what a build was asked to look for and names nothing
+     * that is sent, here as in ngx_http_status_set(), which is handed this
+     * same status once more when ngx_http_send_header() moves the error status
+     * of the request into the response and which reports it there in its turn.
+     * A request that has already gone wrong is therefore still answered, and
+     * answered with the status it went wrong with.
+     *
+     * The note is written at debug level, and the setter is where the one
+     * report an objectionable status produces is written, at error level, which
+     * is the level the default error_log shows and is not the alert level nginx
+     * keeps for a fault of its own making.  Both would otherwise write the same
+     * line about the same status for the same request, this gate first and the
+     * setter when the move reaches it, and a report that says twice what it has
+     * to say once tells an operator that two things went wrong.  So there is a
+     * single place such a status is reported from, what an operator reads names
+     * the status, and this note remains for following a request through a debug
+     * log, where the gate a status passed through is worth knowing and volume
+     * is not a concern.
      *
      * This is the one gate that is handed a status whose author it does not
      * know, an upstream's status arriving here whenever an error of its is
@@ -564,8 +575,9 @@ ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
     if (r->upstream == NULL
         && ngx_http_status_validate((ngx_uint_t) error) != NGX_OK)
     {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                      "unregistered HTTP status %ui", (ngx_uint_t) error);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "http unregistered status %ui returned",
+                       (ngx_uint_t) error);
     }
 
 #endif
@@ -755,17 +767,20 @@ ngx_http_send_error_page(ngx_http_request_t *r, ngx_http_err_page_t *err_page)
          * instead, "error_page 599 =599 /uri" for an upstream that answered 599
          * would pass as a relayed response, which it is not.
          *
-         * Reported and never replaced, as at the gate above: the response
-         * carries what the configuration asked for, so nothing that is sent
-         * depends on this gate in any build.
+         * Noted and never replaced, as at the gate above, and noted at debug
+         * level for the same reason: this status reaches
+         * ngx_http_status_set() when ngx_http_send_header() moves it into the
+         * response, and that is the one place an objectionable status is
+         * reported from.  The response carries what the configuration asked
+         * for, so nothing that is sent depends on this gate in any build.
          */
 
         if (overwrite
             && ngx_http_status_validate((ngx_uint_t) overwrite) != NGX_OK)
         {
-            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                          "unregistered HTTP status %ui",
-                          (ngx_uint_t) overwrite);
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                           "http unregistered status %ui from error_page",
+                           (ngx_uint_t) overwrite);
         }
 
 #endif
