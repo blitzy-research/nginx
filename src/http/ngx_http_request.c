@@ -2834,8 +2834,30 @@ ngx_http_terminate_request(ngx_http_request_t *r, ngx_int_t rc)
 
     mr->terminated = 1;
 
+    /*
+     * The status a request is terminated with is one nginx chose, and it is
+     * written so that the access log records it rather than for a response to
+     * carry: 444 and 499 are among the codes that reach here and no response
+     * carries either.  It goes through ngx_http_status_set() all the same, that
+     * being what writes a response status nginx chose, and it is written to the
+     * main request, which is the request that is logged.  The guard admits a
+     * positive termination code only where the main request has no status yet
+     * or has sent nothing, so a status that a response did carry is not
+     * overwritten for the log.
+     *
+     * The result is answered for as it is wherever the setter is called, and
+     * there is nothing here to answer a refusal with beyond reporting it: this
+     * function returns nothing, and the request is being terminated.  No build
+     * refuses a status, so the log is left the status this writes; and the two
+     * codes that reach here are nginx's own, which the registry describes, so a
+     * build configured to validate has nothing to report of them either.
+     */
+
     if (rc > 0 && (mr->headers_out.status == 0 || mr->connection->sent == 0)) {
-        mr->headers_out.status = rc;
+        if (ngx_http_status_set(mr, (ngx_uint_t) rc) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "invalid status");
+        }
     }
 
     cln = mr->cleanup;
@@ -3911,8 +3933,29 @@ ngx_http_free_request(ngx_http_request_t *r, ngx_int_t rc)
 
 #endif
 
+    /*
+     * The status a request is closed with is one nginx chose, and it is written
+     * so that the access log records it rather than for a response to carry:
+     * 444 and 499 are among the codes that reach here and no response carries
+     * either.  It goes through ngx_http_status_set() all the same, that being
+     * what writes a response status nginx chose.  The guard admits a positive
+     * closing code only where the request has no status yet or has sent
+     * nothing, so a status that a response did carry is not overwritten for the
+     * log.
+     *
+     * The result is answered for as it is wherever the setter is called, and
+     * there is nothing here to answer a refusal with beyond reporting it: this
+     * function returns nothing, and the request is freed after this.  No build
+     * refuses a status, so the log is left the status this writes; and the two
+     * codes that reach here are nginx's own, which the registry describes, so a
+     * build configured to validate has nothing to report of them either.
+     */
+
     if (rc > 0 && (r->headers_out.status == 0 || r->connection->sent == 0)) {
-        r->headers_out.status = rc;
+        if (ngx_http_status_set(r, (ngx_uint_t) rc) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "invalid status");
+        }
     }
 
     if (!r->logged) {

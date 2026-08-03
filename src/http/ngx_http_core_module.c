@@ -1778,7 +1778,23 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
         return rc;
     }
 
-    r->headers_out.status = status;
+    /*
+     * Unlike the module call sites that write a status of their own, the status
+     * here is an argument: a return directive supplies whatever number the
+     * configuration named, so unlike those sites this one is genuinely reached
+     * with a status the registry does not describe.  A refusal, which the
+     * setter does not produce as it is written today, is therefore noted at
+     * debug level rather than reported again -- ngx_http_status_set() has
+     * already written the one report such a status produces, and it names the
+     * status, which a line here would not.
+     */
+
+    if (ngx_http_status_set(r, status) != NGX_OK) {
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "http status %ui refused for a response of nginx's own",
+                       status);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
 
     if (ngx_http_complex_value(r, cv, &val) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -1842,6 +1858,38 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
 }
 
 
+/*
+ * The error status of a request is moved into the response here, over the
+ * response status, and this is the last point a response passes through on its
+ * way to the filter chain that emits it.  The status being moved is one nginx
+ * or a configuration of it chose, so the move is made with
+ * ngx_http_status_set().  The two stores that stand outside that function stay
+ * as they are: the status an upstream authored, which ngx_http_upstream.c
+ * copies across directly, and the status the embedded Perl module falls back
+ * to.
+ *
+ * The status being moved was examined where it was chosen, by the gate in
+ * ngx_http_special_response_handler() or by ngx_http_send_error_page(), and
+ * neither of those replaces one: each notes a status the registry does not
+ * describe, at debug level, and lets it stand, having no caller of its own to
+ * answer to.  A build configured with --with-http_status_validation reports it
+ * here as well, the setter examining every status it is given, and then stores
+ * it as any other; a build without the switch stores it in silence.  Either way
+ * the response is sent, so a request that has already gone wrong is answered
+ * with the status it went wrong with whichever build answers it.
+ *
+ * Nothing is logged beside what the setter writes.  ngx_http_status_set() has
+ * already written the one report an objectionable status produces, naming the
+ * status, and this is the point every such status reaches, so a line here would
+ * repeat that report for every one of them while saying less than it does: it
+ * would not name the status, and there is nothing about this site that the
+ * report written from inside the setter does not already tell an operator.
+ *
+ * The status line is cleared after the store and not by it, the setter not
+ * touching the status line, so that the moved status is not sent under the
+ * status line of the one it replaced.
+ */
+
 ngx_int_t
 ngx_http_send_header(ngx_http_request_t *r)
 {
@@ -1856,7 +1904,10 @@ ngx_http_send_header(ngx_http_request_t *r)
     }
 
     if (r->err_status) {
-        r->headers_out.status = r->err_status;
+        if (ngx_http_status_set(r, r->err_status) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
         r->headers_out.status_line.len = 0;
     }
 
@@ -3417,6 +3468,20 @@ ngx_http_core_type(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
 static ngx_int_t
 ngx_http_core_preconfiguration(ngx_conf_t *cf)
 {
+    /*
+     * The registry is prepared for every configuration that is parsed, here
+     * because preconfiguration runs before any module can register a status
+     * code of its own.  Preparing it leaves it holding the codes nginx was
+     * built with and nothing besides, so a reload and a configuration test are
+     * answered exactly as a first start is, and what the configuration before
+     * this one registered is gone with it.  Every page it writes is written in
+     * the master process, before any worker is forked from it.
+     */
+
+    if (ngx_http_status_init(cf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     return ngx_http_variables_add_core_vars(cf);
 }
 
@@ -3425,6 +3490,20 @@ static ngx_int_t
 ngx_http_core_postconfiguration(ngx_conf_t *cf)
 {
     ngx_http_top_request_body_filter = ngx_http_request_body_save_filter;
+
+    /*
+     * The registry is closed to registration here, once the whole of the
+     * configuration has been parsed: a status code of a module's own is
+     * registered while it is parsed, from a directive of that module or from
+     * its preconfiguration, so every module has had that opportunity by now.
+     * No worker process has been forked yet, so from here on the registry is
+     * only ever read, and no page of it is copied on write in a worker: a
+     * worker's private memory does not grow on account of it, whether that
+     * worker was forked for the first configuration or for one that replaced
+     * it.
+     */
+
+    ngx_http_status_seal();
 
     return NGX_OK;
 }

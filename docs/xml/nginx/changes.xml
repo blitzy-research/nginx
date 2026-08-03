@@ -5,6 +5,52 @@
 <change_log title="nginx">
 
 
+<changes ver="1.29.5" date="2026-07-29">
+
+<change type="change">
+<para lang="ru">
+теперь коды ответов HTTP управляются с помощью
+единого внутреннего реестра кодов, которые отдаёт nginx;
+строгую проверку кодов по этому реестру
+можно включить с помощью параметра configure
+--with-http_status_validation.
+</para>
+<para lang="en">
+now HTTP status codes are managed using a unified internal registry
+of the status codes nginx sends;
+strict validation of status codes against this registry can be enabled
+with the --with-http_status_validation configure option.
+</para>
+</change>
+
+<change type="change">
+<para lang="ru">
+теперь в методе $r->status() модуля ngx_http_perl_module
+отрицательный код ответа или код больше 999 считается ошибкой;
+код 0 по-прежнему допускается и означает,
+что код ответа задан не был.
+</para>
+<para lang="en">
+now a negative status code or a status code greater than 999 is considered
+an error in the $r->status() method of the ngx_http_perl_module;
+the code 0 is still accepted and means that no status code has been set.
+</para>
+</change>
+
+<change type="change">
+<para lang="ru">
+теперь при использовании HTTP/2 или HTTP/3
+код ответа больше 999 считается ошибкой.
+</para>
+<para lang="en">
+now a status code greater than 999 is considered an error
+when using HTTP/2 or HTTP/3.
+</para>
+</change>
+
+</changes>
+
+
 <changes ver="1.29.4" date="2025-12-09">
 
 <change type="feature">

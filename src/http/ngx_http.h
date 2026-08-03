@@ -32,6 +32,7 @@ typedef u_char *(*ngx_http_log_handler_pt)(ngx_http_request_t *r,
 #include <ngx_http_variables.h>
 #include <ngx_http_config.h>
 #include <ngx_http_request.h>
+#include <ngx_http_status.h>
 #include <ngx_http_script.h>
 #include <ngx_http_upstream.h>
 #include <ngx_http_upstream_round_robin.h>
@@ -157,6 +158,29 @@ ngx_int_t ngx_http_special_response_handler(ngx_http_request_t *r,
 ngx_int_t ngx_http_filter_finalize_request(ngx_http_request_t *r,
     ngx_module_t *m, ngx_int_t error);
 void ngx_http_clean_header(ngx_http_request_t *r);
+
+
+/*
+ * The API of the HTTP status code registry.  ngx_http_status_set() writes a
+ * response status that nginx or a module chose, and is what a module calls to
+ * choose one; two stores of a response status stand outside it by design, the
+ * status an upstream authored and the status the embedded Perl module falls
+ * back to for a script that set none.  ngx_http_status_validate(),
+ * ngx_http_status_reason() and ngx_http_status_is_cacheable() answer about a
+ * status code and write nothing.  ngx_http_status_register() adds a definition
+ * to the registry and so writes to it, which is why it is admitted only while
+ * a configuration is being parsed.
+ *
+ * The record a definition is written as, the flags one carries and the macros
+ * over a status code are in ngx_http_status.h, along with the functions the
+ * HTTP core and two of its modules use that are not part of this API.
+ */
+
+ngx_int_t ngx_http_status_set(ngx_http_request_t *r, ngx_uint_t status);
+ngx_int_t ngx_http_status_validate(ngx_uint_t status);
+const ngx_str_t *ngx_http_status_reason(ngx_uint_t status);
+ngx_uint_t ngx_http_status_is_cacheable(ngx_uint_t status);
+ngx_int_t ngx_http_status_register(ngx_http_status_def_t *def);
 
 
 ngx_int_t ngx_http_discard_request_body(ngx_http_request_t *r);

@@ -574,6 +574,32 @@ struct ngx_http_request_s {
     unsigned                          background:1;
     unsigned                          health_check:1;
 
+    /*
+     * the bookkeeping of the status code registry, which is this one bit: it
+     * records that a response status has been chosen for the request.  It is a
+     * bit field in the request structure rather than module context data,
+     * following limit_conn_status and limit_req_status above; the request pool
+     * it lives in is private to a request, so no thread local storage is
+     * needed
+     *
+     * it grants a status nothing.  Every status ngx_http_status_set() is given
+     * is examined, whatever has been written for the request already, and this
+     * bit is read only where a status is set again after the response was
+     * decided, which is legitimate and is noted for debugging rather than
+     * refused
+     *
+     * the bit is unconditional, and not confined to a build configured with
+     * --with-http_status_validation, so that the layout of this structure does
+     * not depend on a build option; and it is the last bit of this bit field
+     * run, occupying padding that precedes the aligned member below, so that
+     * the storage unit and the bit position of every member above it are the
+     * ones they would be without it.  The size of the structure alone does not
+     * establish that, a bit inserted anywhere else leaving the size and the
+     * module signature alike while moving every bit that follows it
+     */
+
+    unsigned                          status_final:1;
+
     /* used to parse HTTP headers */
 
     ngx_uint_t                        state;

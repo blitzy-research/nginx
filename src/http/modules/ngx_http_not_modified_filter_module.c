@@ -91,7 +91,12 @@ ngx_http_not_modified_header_filter(ngx_http_request_t *r)
 
         /* not modified */
 
-        r->headers_out.status = NGX_HTTP_NOT_MODIFIED;
+        if (ngx_http_status_set(r, NGX_HTTP_NOT_MODIFIED) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                          "invalid status");
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+
         r->headers_out.status_line.len = 0;
         r->headers_out.content_type.len = 0;
         ngx_http_clear_content_length(r);

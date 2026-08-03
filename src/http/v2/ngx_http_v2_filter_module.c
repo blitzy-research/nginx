@@ -27,6 +27,15 @@
 #define NGX_HTTP_V2_NO_TRAILERS           (ngx_http_v2_out_frame_t *) -1
 
 
+/*
+ * The widest status this encoder writes, which is the widest one three digits
+ * hold: the bound belongs to the fixed width field described where it is
+ * tested below, so it is written here and nowhere else.
+ */
+
+#define NGX_HTTP_V2_STATUS_MAX            999
+
+
 static ngx_int_t ngx_http_v2_header_filter(ngx_http_request_t *r);
 static ngx_int_t ngx_http_v2_early_hints_filter(ngx_http_request_t *r);
 static ngx_int_t ngx_http_v2_init_stream(ngx_http_request_t *r);
@@ -163,6 +172,28 @@ ngx_http_v2_header_filter(ngx_http_request_t *r)
         r->header_only = 1;
     }
 
+    /*
+     * This is a memory safety bound belonging to this encoder alone, and not a
+     * rule about which statuses nginx may use.  A status the HPACK static table
+     * does not cover is written below as a literal of exactly three digits:
+     * three bytes are reserved for it, three are declared as the length of the
+     * literal, and the width in the %03ui conversion that writes it is a
+     * minimum rather than a limit, so it never truncates.  A status needing
+     * more digits would therefore be written past the end of the reservation,
+     * which is why one is refused here, before any room is reserved.  Nothing
+     * outside a fixed width encoding needs this: an HTTP/1.x status line
+     * reserves NGX_INT_T_LEN bytes for the same number and encodes any width.
+     * A status below 100 is accepted, because the status line parser accepts
+     * one from an upstream and three digits are written for it.
+     */
+
+    if (r->headers_out.status > NGX_HTTP_V2_STATUS_MAX) {
+        ngx_log_error(NGX_LOG_ALERT, fc->log, 0,
+                      "HTTP status %ui too wide for an HTTP/2 response",
+                      r->headers_out.status);
+        return NGX_ERROR;
+    }
+
     switch (r->headers_out.status) {
 
     case NGX_HTTP_OK:
@@ -218,6 +249,13 @@ ngx_http_v2_header_filter(ngx_http_request_t *r)
     h2c = stream->connection;
 
     len = h2c->table_update ? 1 : 0;
+
+    /*
+     * These are the three bytes the check above protects: a status the HPACK
+     * static table does not cover is written as a literal of exactly three
+     * digits, and three are enough because a wider status was refused before
+     * anything was reserved for it.
+     */
 
     len += status ? 1 : 1 + ngx_http_v2_literal_size("418");
 
@@ -711,6 +749,13 @@ ngx_http_v2_early_hints_filter(ngx_http_request_t *r)
     h2c = stream->connection;
 
     len += h2c->table_update ? 1 : 0;
+
+    /*
+     * As in ngx_http_v2_header_filter(), room for exactly three digits of
+     * status.  Here the status is the constant NGX_HTTP_EARLY_HINTS, so the
+     * reservation is exact and nothing outside this function can widen it.
+     */
+
     len += 1 + ngx_http_v2_literal_size("418");
 
     tmp = ngx_palloc(r->pool, tmp_len);

@@ -28,6 +28,16 @@
     sv_setpvn(TARG, (char *) p, len)
 
 
+/*
+ * The widest status a script may choose, which is the widest one three digits
+ * hold.  The bound belongs to the fixed width fields described where it is
+ * tested below rather than to a status code, so it is written here and not
+ * published, exactly as the HTTP/2 and HTTP/3 header filters write theirs.
+ */
+
+#define NGX_HTTP_PERL_STATUS_MAX  999
+
+
 static ngx_int_t
 ngx_http_perl_sv2str(pTHX_ ngx_http_request_t *r, ngx_str_t *s, SV *sv)
 {
@@ -105,6 +115,7 @@ void
 status(r, code)
     CODE:
 
+    IV                    code;
     ngx_http_request_t   *r;
     ngx_http_perl_ctx_t  *ctx;
 
@@ -114,7 +125,57 @@ status(r, code)
         croak("status(): cannot be used in variable handler");
     }
 
-    r->headers_out.status = SvIV(ST(1));
+    code = SvIV(ST(1));
+
+    /*
+     * This is the boundary at which a script chooses the status of a response
+     * that nginx itself authors: the value is whatever integer the script
+     * passed, so unlike the status of an upstream response, which also reaches
+     * nginx from outside but is bounded to three digits by the parser that
+     * reads it and is relayed rather than chosen, this one arrives with no
+     * bound at all.  It is held here to the width a status is written in, which
+     * refuses a negative one before it becomes a very large unsigned one on
+     * conversion, and one too wide for the three digit ":status" field of an
+     * HTTP/2 or an HTTP/3 response.  Holding the producer to that width keeps
+     * such a value from reaching an encoder rather than being caught inside
+     * one; it does not stand in for the bounds an encoder keeps for itself,
+     * which the HTTP/2 and HTTP/3 filters hold whatever wrote the status they
+     * are given.
+     *
+     * The bound is that width and nothing narrower.  In particular it is not
+     * ngx_http_status_in_range(), which says which statuses the registry
+     * describes and is a narrower question than which ones a response carries:
+     * a "return" directive names a status of anywhere in [0, 999] and nginx
+     * sends it, so a script naming the same one is answered the same way.  A
+     * status the registry does not describe is sent under its bare number, and
+     * a status below 100 is written as three digits like any other; zero is the
+     * value a request starts with, and is also what SvIV() answers for an
+     * undefined argument and for one that is not a number at all, so
+     * send_http_header() answers 200 for it, as it did before this bound
+     * existed.
+     *
+     * The test is made whatever the build, and not only in one configured with
+     * --with-http_status_validation, because what needs protecting is a
+     * response and not only a build that was asked to validate.  Which
+     * statuses the registry describes is a separate question, asked of a
+     * separate build: ngx_http_status_set() below answers it, and only a build
+     * configured with that switch says anything for it, reporting such a status
+     * and then storing it as it stores any other.
+     *
+     * A status refused by the width bound is reported by croak() alone, and
+     * nothing is logged beside a status the registry does not describe either:
+     * ngx_http_status_set() has already written the one line such a status
+     * produces, naming the status, so a second line here would say less and
+     * repeat it.
+     */
+
+    if (code < 0 || code > NGX_HTTP_PERL_STATUS_MAX) {
+        croak("status(): invalid status code");
+    }
+
+    if (ngx_http_status_set(r, (ngx_uint_t) code) != NGX_OK) {
+        croak("status(): invalid status code");
+    }
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "perl status: %d", r->headers_out.status);

@@ -30,6 +30,15 @@
 #define NGX_HTTP_V3_HEADER_USER_AGENT                95
 
 
+/*
+ * The widest status this encoder writes, which is the widest one three digits
+ * hold: the bound belongs to the fixed width field described where it is
+ * tested below, so it is written here and nowhere else.
+ */
+
+#define NGX_HTTP_V3_STATUS_MAX                       999
+
+
 typedef struct {
     ngx_chain_t         *free;
     ngx_chain_t         *busy;
@@ -119,6 +128,28 @@ ngx_http_v3_header_filter(ngx_http_request_t *r)
         r->header_only = 1;
     }
 
+    /*
+     * This is a memory safety bound belonging to this encoder alone, and not a
+     * rule about which statuses nginx may use.  A status other than the one the
+     * QPACK static table covers is written below as a literal of exactly three
+     * digits: three bytes are reserved for it, three are declared as the length
+     * of the literal, and the width in the %03ui conversion that writes it is a
+     * minimum rather than a limit, so it never truncates.  A status needing
+     * more digits would therefore be written past the end of the reservation,
+     * which is why one is refused here, before any room is reserved.  Nothing
+     * outside a fixed width encoding needs this: an HTTP/1.x status line
+     * reserves NGX_INT_T_LEN bytes for the same number and encodes any width.
+     * A status below 100 is accepted, because the status line parser accepts
+     * one from an upstream and three digits are written for it.
+     */
+
+    if (r->headers_out.status > NGX_HTTP_V3_STATUS_MAX) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "HTTP status %ui too wide for an HTTP/3 response",
+                      r->headers_out.status);
+        return NGX_ERROR;
+    }
+
     if (r->headers_out.last_modified_time != -1) {
         if (r->headers_out.status != NGX_HTTP_OK
             && r->headers_out.status != NGX_HTTP_PARTIAL_CONTENT
@@ -148,6 +179,12 @@ ngx_http_v3_header_filter(ngx_http_request_t *r)
     ll = &out;
 
     len = ngx_http_v3_encode_field_section_prefix(NULL, 0, 0, 0);
+
+    /*
+     * These are the three bytes the check above protects: a status other than
+     * 200 is written as a literal of exactly three digits, and three are enough
+     * because a wider status was refused before anything was reserved for it.
+     */
 
     if (r->headers_out.status == NGX_HTTP_OK) {
         len += ngx_http_v3_encode_field_ri(NULL, 0,
